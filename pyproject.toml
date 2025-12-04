@@ -1,0 +1,58 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "jcecard"
+version = "0.1.0"
+description = "A virtual OpenPGP smart card implementation using johnnycanencrypt"
+readme = "README.md"
+license = {text = "BSD-2-Clause"}
+authors = [
+    {name = "Kushal Das", email = "mail@kushaldas.in"}
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["openpgp", "smartcard", "virtual", "vpcd", "cryptography"]
+dependencies = [
+    "johnnycanencrypt>=0.16.0",
+    "cryptography",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "flit",
+]
+
+[project.urls]
+Homepage = "https://github.com/kushaldas/jcecard"
+Documentation = "https://github.com/kushaldas/jcecard"
+Repository = "https://github.com/kushaldas/jcecard"
+Issues = "https://github.com/kushaldas/jcecard/issues"
+
+[project.scripts]
+jcecard = "jcecard:main"
+
+[tool.flit.module]
+name = "jcecard"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

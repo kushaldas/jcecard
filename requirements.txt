@@ -1,0 +1,5 @@
+# Core cryptographic operations
+johnnycanencrypt>=0.17.0
+
+# Fallback cryptographic operations (when johnnycanencrypt is not available)
+cryptography>=41.0.0
