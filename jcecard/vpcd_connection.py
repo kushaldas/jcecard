@@ -292,7 +292,9 @@ class VPCDConnection:
             # APDU command (length > 1)
             elif length > self.CTRL_MSG_LENGTH:
                 if self._on_apdu:
+                    logger.debug(f"APDU command received: {payload.hex()}")
                     response = self._on_apdu(payload)
+                    logger.debug(f"APDU response: {response.hex()}")
                     self.send_response(response)
                 else:
                     # No handler, return generic error

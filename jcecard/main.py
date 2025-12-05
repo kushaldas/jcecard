@@ -11,18 +11,17 @@ import sys
 from pathlib import Path
 from typing import Callable, Optional
 
-from .vpcd_connection import VPCDConnection
-from .apdu import APDUParser, APDUResponse, APDUCommand, SW, OpenPGPIns, APDUError
+from .apdu import (SW, APDUCommand, APDUError, APDUParser, APDUResponse,
+                   OpenPGPIns)
 from .atr import DEFAULT_ATR
-from .tlv import TLV, TLVEncoder, TLVParser, OpenPGPTag
-from .card_data import CardState, CardDataStore, CardholderData, AlgorithmID
+from .card_data import AlgorithmID, CardDataStore, CardholderData, CardState
+from .crypto_backend import (CryptoBackend, DecryptionResult, GeneratedKey,
+                             KeyType, SignatureResult, SimpleCryptoBackend,
+                             get_crypto_backend)
 from .pin_manager import PINManager, PINRef, PINResult
-from .security_state import SecurityState, AccessCondition, OperationAccess
-from .crypto_backend import (
-    CryptoBackend, SimpleCryptoBackend, get_crypto_backend,
-    KeyType, GeneratedKey, SignatureResult, DecryptionResult
-)
-
+from .security_state import AccessCondition, OperationAccess, SecurityState
+from .tlv import TLV, OpenPGPTag, TLVEncoder, TLVParser
+from .vpcd_connection import VPCDConnection
 
 # Configure logging
 logging.basicConfig(
@@ -239,6 +238,11 @@ class OpenPGPCard:
         # Handle GET RESPONSE for chained responses
         if cmd.ins == OpenPGPIns.GET_RESPONSE:
             return self._handle_get_response(cmd)
+
+        # Check if card is terminated - only SELECT, ACTIVATE, and TERMINATE allowed
+        if self.card_state.terminated:
+            if cmd.ins not in (OpenPGPIns.SELECT, OpenPGPIns.ACTIVATE_FILE, OpenPGPIns.TERMINATE_DF):
+                return APDUResponse.error(SW.CONDITIONS_NOT_SATISFIED)
         
         # Route based on instruction
         handlers: dict[int, Callable[[APDUCommand], APDUResponse]] = {
@@ -258,6 +262,7 @@ class OpenPGPCard:
         }
         
         handler = handlers.get(cmd.ins)
+        print(handler)
         if handler is not None:
             return handler(cmd)
         
@@ -935,15 +940,71 @@ class OpenPGPCard:
         return APDUResponse.success(challenge)
     
     def _handle_terminate(self, cmd: APDUCommand) -> APDUResponse:
-        """Handle TERMINATE DF command."""
+        """
+        Handle TERMINATE DF command (INS 0xE6).
+        
+        This command sets the card to a terminated state where most
+        operations are disabled. Only ACTIVATE FILE can restore it.
+        
+        Requires: PW3 (Admin PIN) verified, or PW1 and PW3 both blocked.
+        """
         logger.info("TERMINATE DF")
-        # TODO: Implement card termination
-        return APDUResponse.error(SW.SECURITY_STATUS_NOT_SATISFIED)
+        
+        if not self.selected:
+            return APDUResponse.error(SW.CONDITIONS_NOT_SATISFIED)
+        
+        # Check if already terminated
+        if self.card_state.terminated:
+            return APDUResponse.error(SW.CONDITIONS_NOT_SATISFIED)
+        
+        # Termination is allowed if:
+        # 1. PW3 is verified, OR
+        # 2. Both PW1 and PW3 are blocked (allows recovery)
+        pw1_blocked = self._pin_manager.is_pw1_blocked()
+        pw3_blocked = self._pin_manager.is_pw3_blocked()
+        pw3_verified = self._security.is_pw3_verified()
+        
+        if not pw3_verified and not (pw1_blocked and pw3_blocked):
+            return APDUResponse.error(SW.SECURITY_STATUS_NOT_SATISFIED)
+        
+        # Set terminated state
+        self.card_state.terminated = True
+        self.save_state()
+        
+        logger.info("Card terminated - use ACTIVATE FILE to restore")
+        return APDUResponse.success()
     
     def _handle_activate(self, cmd: APDUCommand) -> APDUResponse:
-        """Handle ACTIVATE FILE command."""
+        """
+        Handle ACTIVATE FILE command (INS 0x44).
+        
+        This command reactivates a terminated card by resetting it
+        to factory defaults. All keys and data are erased.
+        """
         logger.info("ACTIVATE FILE")
-        # TODO: Implement card activation
+        
+        if not self.selected:
+            return APDUResponse.error(SW.CONDITIONS_NOT_SATISFIED)
+        
+        # Only valid if card is terminated
+        if not self.card_state.terminated:
+            return APDUResponse.error(SW.CONDITIONS_NOT_SATISFIED)
+        
+        # Reset card to factory defaults
+        self._data_store.reset_to_factory()
+        
+        # Reinitialize PIN manager with fresh state
+        self._pin_manager = PINManager(self._data_store.state)
+        
+        # Reset security state
+        self._security.reset()
+        self._security.set_card_state(self._data_store.state)
+        self._security.set_pin_manager(self._pin_manager)
+        
+        # Clear crypto backend keys
+        self._crypto = get_crypto_backend()
+        
+        logger.info("Card activated - reset to factory defaults")
         return APDUResponse.success()
 
 

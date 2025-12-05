@@ -333,6 +333,9 @@ class APDUParser:
         """
         Parse short APDU format from remaining bytes after header.
         
+        This parser is lenient and will accept APDUs with extra trailing bytes,
+        which some smart card middleware implementations may send.
+        
         Returns:
             Tuple of (data, le)
         """
@@ -344,16 +347,21 @@ class APDUParser:
         if len(remaining) == 1:
             # Case 2S: Just Le
             le = 256 if lc == 0 else lc
-        elif len(remaining) == 1 + lc:
-            # Case 3S: Just Lc and data
+        elif len(remaining) >= 1 + lc:
+            # Case 3S or 4S: Lc and data, optionally with Le
             data = remaining[1:1 + lc]
-        elif len(remaining) == 1 + lc + 1:
-            # Case 4S: Lc, data, and Le
-            data = remaining[1:1 + lc]
-            le_byte = remaining[1 + lc]
-            le = 256 if le_byte == 0 else le_byte
+            if len(remaining) >= 1 + lc + 1:
+                # Case 4S: Has Le byte
+                le_byte = remaining[1 + lc]
+                le = 256 if le_byte == 0 else le_byte
+                # Note: Any bytes after Le are silently ignored (lenient parsing)
+                if len(remaining) > 1 + lc + 1:
+                    import logging
+                    logging.getLogger(__name__).debug(
+                        f"APDU has {len(remaining) - 1 - lc - 1} extra trailing bytes, ignoring"
+                    )
         else:
-            raise APDUError(f"Invalid APDU length: expected {1 + lc} or {2 + lc} bytes, got {len(remaining)}")
+            raise APDUError(f"Invalid APDU length: Lc={lc} but only {len(remaining) - 1} data bytes available")
         
         return (data, le)
 
