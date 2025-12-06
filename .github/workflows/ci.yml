@@ -31,14 +31,22 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
     
+    - name: Make just available for root
+      run: |
+        sudo ln -sf $(which just) /usr/local/bin/just
+
     - name: Install just
       uses: extractions/setup-just@v2
+
+    - name: Make just available for root
+      run: |
+        sudo ln -sf $(which just) /usr/local/bin/just
     
     - name: Build Rust IFD handler
       run: |
         cd ifd-jcecard
         cargo build --release
-    
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -54,7 +62,7 @@ jobs:
     
     - name: Install IFD handler to pcscd
       run: |
-        sudo just install-ifd
+        just install-ifd
     
     - name: Configure gpg-agent for loopback pinentry
       run: |
