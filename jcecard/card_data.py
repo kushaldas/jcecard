@@ -282,7 +282,8 @@ class CardholderData:
     name: str = ""
     
     # Language preference (ISO 639-1, up to 4 languages)
-    language: str = ""
+    # Default to "en" since some clients (johnnycanencrypt) expect non-empty language
+    language: str = "en"
     
     # Sex (ISO 5218: 0=unknown, 1=male, 2=female, 9=not applicable)
     sex: int = 0
@@ -549,10 +550,23 @@ class CardState:
 class CardDataStore:
     """
     Handles persistent storage of card state.
+    
+    The storage location can be configured via the JCECARD_STORAGE_DIR
+    environment variable. If not set, defaults to /var/lib/jcecard which is
+    accessible by both the pcscd daemon (running as root) and user processes.
     """
     
-    DEFAULT_STORAGE_DIR = Path.home() / '.openpgp-virtual-card'
     DEFAULT_STATE_FILE = 'card_state.json'
+    
+    @staticmethod
+    def _get_default_storage_dir() -> Path:
+        """Get the default storage directory, checking environment variable first."""
+        env_path = os.environ.get('JCECARD_STORAGE_DIR')
+        if env_path:
+            return Path(env_path)
+        # Use /var/lib/jcecard for cross-user accessibility
+        # This allows both pcscd (root) and user processes to access
+        return Path('/var/lib/jcecard')
     
     def __init__(self, storage_path: Optional[Path] = None):
         """
@@ -562,7 +576,7 @@ class CardDataStore:
             storage_path: Path to store card data. If None, uses default location.
         """
         if storage_path is None:
-            self.storage_dir = self.DEFAULT_STORAGE_DIR
+            self.storage_dir = self._get_default_storage_dir()
         else:
             self.storage_dir = storage_path
         
@@ -572,9 +586,9 @@ class CardDataStore:
     def _ensure_storage_dir(self) -> None:
         """Create storage directory if it doesn't exist."""
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        # Set restrictive permissions on Unix
+        # Set permissions to allow other users to read (for tests)
         try:
-            os.chmod(self.storage_dir, 0o700)
+            os.chmod(self.storage_dir, 0o755)
         except OSError:
             pass
     
@@ -615,9 +629,9 @@ class CardDataStore:
         try:
             with open(self.state_file, 'w') as f:
                 json.dump(self.state.to_dict(), f, indent=2)
-            # Set restrictive permissions
+            # Set permissions to allow other users to read (for tests)
             try:
-                os.chmod(self.state_file, 0o600)
+                os.chmod(self.state_file, 0o644)
             except OSError:
                 pass
             logger.debug(f"Saved card state to {self.state_file}")

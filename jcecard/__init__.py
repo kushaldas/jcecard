@@ -80,6 +80,11 @@ from .main import (
     main,
 )
 
+from .tcp_server import (
+    TCPServer,
+    main as tcp_main,
+)
+
 __all__ = [
     # Version
     "__version__",
@@ -146,5 +151,9 @@ __all__ = [
     "OpenPGPCard",
     "run_card",
     "main",
+    
+    # TCP Server
+    "TCPServer",
+    "tcp_main",
 ]
 

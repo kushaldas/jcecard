@@ -118,6 +118,9 @@ class VPCDConnection:
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            # Set socket timeout to detect connection issues
+            # Note: We use a long timeout since vpcd might not send messages frequently
+            self.sock.settimeout(120.0)  # 2 minute timeout
             self.sock.connect((self.host, self.port))
             self.connected = True
             logger.info(f"Connected to vpcd at {self.host}:{self.port}")
@@ -161,16 +164,19 @@ class VPCDConnection:
             The received bytes
             
         Raises:
-            ConnectionError: If connection is lost
+            ConnectionError: If connection is lost or timeout occurs
         """
         if self.sock is None:
             raise ConnectionError("Not connected to vpcd")
         data = b''
         while len(data) < num_bytes:
-            chunk = self.sock.recv(num_bytes - len(data))
-            if not chunk:
-                raise ConnectionError("Connection closed by vpcd")
-            data += chunk
+            try:
+                chunk = self.sock.recv(num_bytes - len(data))
+                if not chunk:
+                    raise ConnectionError("Connection closed by vpcd")
+                data += chunk
+            except socket.timeout:
+                raise ConnectionError("Socket timeout - connection may be lost")
         return data
     
     def _send_message(self, data: bytes) -> None:
@@ -180,10 +186,14 @@ class VPCDConnection:
         Args:
             data: The message payload to send
         """
+        import sys
         if self.sock is None:
             raise ConnectionError("Not connected to vpcd")
         # Prepend 2-byte big-endian length
         length = struct.pack('>H', len(data))
+        logger.debug(f"Calling sendall with {len(data)+2} bytes total")
+        sys.stdout.flush()
+        sys.stderr.flush()
         self.sock.sendall(length + data)
         logger.debug(f"Sent {len(data)} bytes: {data.hex()}")
     
@@ -197,9 +207,16 @@ class VPCDConnection:
         Raises:
             ConnectionError: If connection is lost
         """
+        import sys
         # Read 2-byte big-endian length
+        logger.debug("Waiting for length prefix...")
+        sys.stdout.flush()
+        sys.stderr.flush()
         length_data = self._recv_exact(self.LENGTH_PREFIX_SIZE)
         length = struct.unpack('>H', length_data)[0]
+        logger.debug(f"Got length: {length}")
+        sys.stdout.flush()
+        sys.stderr.flush()
         
         if length == 0:
             return (0, b'')
@@ -216,8 +233,19 @@ class VPCDConnection:
         Args:
             atr: The ATR bytes to send
         """
-        self._send_message(atr)
-        logger.info(f"Sent ATR: {atr.hex()}")
+        import sys
+        logger.debug(f"About to send ATR: {len(atr)} bytes")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        try:
+            self._send_message(atr)
+            logger.info(f"Sent ATR: {atr.hex()}")
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception as e:
+            logger.exception(f"Error sending ATR: {e}")
+            sys.stdout.flush()
+            sys.stderr.flush()
     
     def send_response(self, response: bytes) -> None:
         """
@@ -226,8 +254,19 @@ class VPCDConnection:
         Args:
             response: The response bytes (data + status word)
         """
-        self._send_message(response)
-        logger.debug(f"Sent response: {response.hex()}")
+        import sys
+        logger.info(f"Sending response: {len(response)} bytes")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        try:
+            self._send_message(response)
+            logger.info(f"Sent response: {len(response)} bytes")
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception as e:
+            logger.exception(f"Error sending response: {e}")
+            sys.stdout.flush()
+            sys.stderr.flush()
     
     def _handle_control_message(self, ctrl: int) -> Optional[bytes]:
         """
@@ -258,8 +297,10 @@ class VPCDConnection:
             return None
         
         elif ctrl_type == VPCDControl.RESET:
+            # RESET should just reset the card state, NOT return ATR
+            # ATR is only sent in response to CTRL_ATR
             if self._on_reset:
-                return self._on_reset()
+                self._on_reset()  # Call but ignore return value
             return None
         
         elif ctrl_type == VPCDControl.ATR:
@@ -292,10 +333,14 @@ class VPCDConnection:
             # APDU command (length > 1)
             elif length > self.CTRL_MSG_LENGTH:
                 if self._on_apdu:
-                    logger.debug(f"APDU command received: {payload.hex()}")
-                    response = self._on_apdu(payload)
-                    logger.debug(f"APDU response: {response.hex()}")
-                    self.send_response(response)
+                    logger.info(f"APDU command received: {payload.hex()}")
+                    try:
+                        response = self._on_apdu(payload)
+                        logger.info(f"APDU response: {response.hex()}")
+                        self.send_response(response)
+                    except Exception as e:
+                        logger.exception(f"Error in APDU handler: {e}")
+                        self.send_response(bytes([0x6F, 0x00]))  # No precise diagnosis
                 else:
                     # No handler, return generic error
                     logger.warning("No APDU handler registered")
@@ -311,22 +356,57 @@ class VPCDConnection:
             logger.exception(f"Error processing message: {e}")
             return False
     
-    def run(self) -> None:
+    def run(self, auto_reconnect: bool = True, max_reconnect_attempts: int = 0) -> None:
         """
         Main event loop - process messages until disconnected.
         
         This method will block and continuously process messages
-        from vpcd until the connection is closed.
+        from vpcd. When the connection is lost, it will attempt to
+        reconnect if auto_reconnect is True.
+        
+        Args:
+            auto_reconnect: If True, automatically reconnect when connection is lost
+            max_reconnect_attempts: Maximum reconnection attempts (0 = unlimited)
         """
-        if not self.connected:
-            if not self.connect():
-                raise ConnectionError("Failed to connect to vpcd")
+        import sys
+        import time
         
-        logger.info("Starting vpcd message loop")
+        reconnect_count = 0
         
-        while self.connected:
-            if not self.process_one_message():
+        while True:
+            # Connect if not already connected
+            if not self.connected:
+                if not self.connect():
+                    if not auto_reconnect:
+                        raise ConnectionError("Failed to connect to vpcd")
+                    reconnect_count += 1
+                    if max_reconnect_attempts > 0 and reconnect_count > max_reconnect_attempts:
+                        logger.error(f"Max reconnection attempts ({max_reconnect_attempts}) reached")
+                        break
+                    logger.info(f"Connection attempt {reconnect_count} failed, retrying in 1 second...")
+                    time.sleep(1)
+                    continue
+                else:
+                    reconnect_count = 0  # Reset on successful connection
+            
+            logger.info("Starting vpcd message loop")
+            
+            # Process messages until disconnected
+            while self.connected:
+                logger.debug("Waiting for next message...")
+                sys.stdout.flush()
+                sys.stderr.flush()
+                if not self.process_one_message():
+                    logger.info("Connection lost, will attempt to reconnect...")
+                    self.connected = False
+                    break
+            
+            if not auto_reconnect:
                 break
+            
+            # Small delay before reconnecting
+            logger.info("Waiting before reconnect...")
+            time.sleep(0.5)
         
         logger.info("vpcd message loop ended")
         self.disconnect()

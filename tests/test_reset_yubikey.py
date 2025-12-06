@@ -5,8 +5,8 @@ These tests verify that johnnycanencrypt's reset_yubikey() function
 works correctly with our virtual OpenPGP card implementation.
 
 Prerequisites:
-- vpcd service must be running (sudo apt install vsmartcard-vpcd)
-- pcscd must be restarted after vpcd install (sudo systemctl restart pcscd)
+- jcecard TCP server must be running (python -m jcecard.tcp_server --debug)
+- pcscd must be running with the IFD handler installed
 """
 
 import pytest
@@ -20,18 +20,16 @@ class TestResetYubikey:
         Test that reset_yubikey() works and the card functions after reset.
 
         This test:
-        1. Uses the jcecard_process fixture to start the virtual card
+        1. Uses the jcecard_process fixture to verify the virtual card is available
         2. Calls reset_yubikey() which terminates and activates the card
         3. Sets the cardholder name on the card (verifies admin PIN works)
+        4. Verifies the name was set by reading card details
         """
         from johnnycanencrypt import johnnycanencrypt as rjce
 
         # Reset the card using johnnycanencrypt
         # This sends: SELECT -> 3 wrong PW1 -> 3 wrong PW3 -> TERMINATE -> ACTIVATE
         rjce.reset_yubikey()
-
-        # After reset, the card process should still be running, and in the output we can see "Card activated - reset to factory defaults"
-        jcecard_process.expect("Card activated - reset to factory defaults", timeout=5)
 
         # Now set the cardholder name using the admin PIN
         # Default admin PIN after reset is "12345678"
@@ -41,3 +39,7 @@ class TestResetYubikey:
         # 3. PUT DATA command works
         test_name = b"Test User"
         rjce.set_name(test_name, b"12345678")
+        
+        # Verify the name was actually set by reading card details
+        details = rjce.get_card_details()
+        assert details.get("name") == "Test User", f"Name not set correctly: {details.get('name')}"

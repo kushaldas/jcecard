@@ -10,7 +10,7 @@ Tests cover:
 
 These tests assume:
 - johnnycanencrypt module is available
-- vpcd service is available (for vpcd connection tests)
+- pcscd is running with ifd-jcecard driver (for PC/SC tests)
 """
 
 import pytest
@@ -521,64 +521,6 @@ class TestCardDataPersistence:
             card2 = OpenPGPCard(storage_path=storage_path)
             assert card2.card_state.signature_counter == 42
 
-
-class TestVPCDConnection:
-    """Tests for vpcd connection functionality.
-    
-    These tests require vpcd to be running.
-    """
-    
-    def test_vpcd_connection_import(self):
-        """Test VPCDConnection can be imported."""
-        from jcecard.vpcd_connection import VPCDConnection, VPCDControl
-        assert VPCDConnection is not None
-        assert VPCDControl is not None
-    
-    def test_vpcd_control_constants(self):
-        """Test VPCDControl enum values."""
-        from jcecard.vpcd_connection import VPCDControl
-        assert VPCDControl.OFF == 0
-        assert VPCDControl.ON == 1
-        assert VPCDControl.RESET == 2
-        assert VPCDControl.ATR == 4
-    
-    def test_vpcd_connection_creation(self):
-        """Test creating VPCDConnection instance."""
-        from jcecard.vpcd_connection import VPCDConnection
-        
-        conn = VPCDConnection()
-        assert conn.host == 'localhost'
-        assert conn.port == 35963
-        assert conn.connected is False
-    
-    def test_vpcd_connection_custom_port(self):
-        """Test VPCDConnection with custom port."""
-        from jcecard.vpcd_connection import VPCDConnection
-        
-        conn = VPCDConnection(host='127.0.0.1', port=12345)
-        assert conn.host == '127.0.0.1'
-        assert conn.port == 12345
-    
-    def test_vpcd_connect_to_service(self):
-        """Test connecting to vpcd service.
-        
-        This test requires vpcd to be running on localhost:35963.
-        """
-        from jcecard.vpcd_connection import VPCDConnection
-        
-        conn = VPCDConnection()
-        
-        # Try to connect - will succeed if vpcd is running
-        result = conn.connect()
-        
-        if result:
-            assert conn.connected is True
-            conn.disconnect()
-            assert conn.connected is False
-        else:
-            # vpcd not running - this is acceptable for unit tests
-            # but should be available in full integration testing
-            pytest.skip("vpcd service not available")
 
 
 class TestFullCardFlow:

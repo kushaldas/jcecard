@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 import hashlib
+import os
+from pathlib import Path
 
 
 # Import modules to test
@@ -15,45 +17,68 @@ from jcecard.card_data import CardState, PINData, CardholderData, KeySlot, Algor
 from jcecard.pin_manager import PINManager
 
 
+def get_card_state_path() -> Path:
+    """Get the path to the card state file."""
+    return Path(os.path.expanduser("~/.jcecard")) / "card_state.json"
+
+
 @pytest.fixture
 def jcecard_process():
     """
-    Fixture that starts jcecard as a child process using pexpect.
+    Fixture that ensures the jcecard TCP server is running.
     
-    Yields the pexpect child process and cleans up on exit.
-    Skips the test if vpcd is not available or jcecard fails to connect.
+    With the new TCP-based architecture, the jcecard TCP server must be
+    started separately before running tests. This fixture verifies
+    connectivity by checking if pcscd can see the card.
     
-    Note: vpcd may stop listening if no card has connected recently.
-    Restarting pcscd (sudo systemctl restart pcscd) will restart vpcd.
+    To start the TCP server manually:
+        python -m jcecard.tcp_server --debug
+    
+    Then start pcscd in debug mode:
+        sudo /usr/sbin/pcscd --foreground --debug --apdu
     """
-    # Start jcecard as a child process using python -c to call run_card
-    child = pexpect.spawn(
-        'python', ['-c', 'from jcecard.main import run_card; run_card()'],
-        encoding='utf-8',
-        timeout=30
-    )
-    
-    # Wait for the card to connect to vpcd
+    # Check if we can connect to the card via pcscd
     try:
-        child.expect('Connected to vpcd', timeout=5)
-    except pexpect.TIMEOUT:
-        child.terminate(force=True)
-        pytest.skip("jcecard failed to connect to vpcd - vpcd may not be running. Try: sudo systemctl restart pcscd")
-    except pexpect.EOF:
-        output = child.before or ""
-        if "Connection refused" in output or "Failed to connect" in output:
-            pytest.skip("vpcd service not available - try: sudo systemctl restart pcscd")
-        pytest.fail(f"jcecard terminated unexpectedly: {output}")
+        from smartcard.System import readers
+        reader_list = readers()
+        
+        if not reader_list:
+            pytest.skip(
+                "No readers found. Ensure jcecard TCP server and pcscd are running.\n"
+                "Start TCP server: python -m jcecard.tcp_server --debug\n"
+                "Start pcscd: sudo /usr/sbin/pcscd --foreground --debug --apdu"
+            )
+        
+        # Check if jcecard virtual reader is present
+        jcecard_reader = None
+        for reader in reader_list:
+            if "jcecard" in str(reader).lower():
+                jcecard_reader = reader
+                break
+        
+        if not jcecard_reader:
+            pytest.skip(
+                "jcecard Virtual OpenPGP Card reader not found.\n"
+                "Ensure IFD handler is installed and pcscd is running."
+            )
+        
+        # Try to connect to verify the card is responsive
+        connection = jcecard_reader.createConnection()
+        connection.connect()
+        atr = connection.getATR()
+        connection.disconnect()
+        
+        if not atr:
+            pytest.skip("Card not responding - check TCP server logs")
+        
+    except Exception as e:
+        pytest.skip(f"Failed to connect to card: {e}")
     
-    # Give pcscd time to detect the card
-    time.sleep(1)
+    # Give any previous operations time to settle
+    time.sleep(0.1)
     
-    yield child
-    
-    # Cleanup: terminate the child process
-    if child.isalive():
-        child.terminate(force=True)
-        child.wait()
+    # Yield None since we don't need to manage a process anymore
+    yield None
 
 
 @pytest.fixture

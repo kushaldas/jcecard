@@ -107,6 +107,20 @@ class CryptoBackend:
             KeyType.DECRYPTION: None,
             KeyType.AUTHENTICATION: None,
         }
+        # Store raw key material (32 bytes for Ed25519/X25519 from key import)
+        self._raw_private_keys: dict[KeyType, Optional[bytes]] = {
+            KeyType.SIGNATURE: None,
+            KeyType.DECRYPTION: None,
+            KeyType.AUTHENTICATION: None,
+        }
+        # Store DER-encoded keys (for RSA imported keys)
+        self._keys: dict[KeyType, bytes] = {}
+        # Store algorithm info for raw keys
+        self._algorithm_info: dict[KeyType, Optional[AlgorithmAttributes]] = {
+            KeyType.SIGNATURE: None,
+            KeyType.DECRYPTION: None,
+            KeyType.AUTHENTICATION: None,
+        }
     
     @staticmethod
     def is_available() -> bool:
@@ -348,12 +362,18 @@ class CryptoBackend:
         Decrypt data using the decryption key.
         
         Args:
-            ciphertext: The encrypted data (OpenPGP encrypted bytes)
+            ciphertext: The encrypted data (for RSA, this is PKCS#1 v1.5 padded ciphertext)
             key_type: The key slot to use (usually DECRYPTION)
             
         Returns:
             DecryptionResult with plaintext or error
         """
+        # Check for RSA key first (stored in self._keys as DER)
+        rsa_key = self._keys.get(key_type)
+        if rsa_key is not None:
+            return self._decrypt_rsa(ciphertext, rsa_key)
+        
+        # Fall back to Johnny-based decryption for PEM keys
         if not CRYPTO_AVAILABLE or Johnny is None:
             return DecryptionResult(b'', False, "Crypto backend not available")
         
@@ -374,6 +394,38 @@ class CryptoBackend:
             
         except Exception as e:
             logger.exception(f"Decryption failed: {e}")
+            return DecryptionResult(b'', False, str(e))
+    
+    def _decrypt_rsa(self, ciphertext: bytes, der_key: bytes) -> DecryptionResult:
+        """
+        Decrypt using RSA key (PKCS#1 v1.5 padding).
+        
+        Args:
+            ciphertext: The ciphertext to decrypt
+            der_key: The DER-encoded private key
+            
+        Returns:
+            DecryptionResult with plaintext
+        """
+        try:
+            from cryptography.hazmat.primitives.asymmetric import padding
+            from cryptography.hazmat.primitives.serialization import load_der_private_key
+            from cryptography.hazmat.backends import default_backend
+            
+            # Load the private key from DER
+            private_key = load_der_private_key(der_key, password=None, backend=default_backend())
+            
+            # Decrypt with PKCS#1 v1.5 padding
+            plaintext = private_key.decrypt(
+                ciphertext,
+                padding.PKCS1v15()
+            )
+            
+            logger.debug(f"RSA decrypted {len(ciphertext)} bytes -> {len(plaintext)} bytes")
+            return DecryptionResult(plaintext, True)
+            
+        except Exception as e:
+            logger.exception(f"RSA decryption failed: {e}")
             return DecryptionResult(b'', False, str(e))
     
     def authenticate(
@@ -475,7 +527,253 @@ class CryptoBackend:
     
     def has_key(self, key_type: KeyType) -> bool:
         """Check if a key is loaded for the given slot."""
-        return self._secret_keys.get(key_type) is not None
+        return (self._secret_keys.get(key_type) is not None or 
+                self._raw_private_keys.get(key_type) is not None or
+                self._keys.get(key_type) is not None)
+    
+    def has_raw_key(self, key_type: KeyType) -> bool:
+        """Check if a raw key is loaded for the given slot (Ed25519/X25519 or RSA)."""
+        # Check for Ed25519/X25519 raw keys
+        if self._raw_private_keys.get(key_type) is not None:
+            return True
+        # Also check for RSA keys stored in _keys (as DER format)
+        if self._keys.get(key_type) is not None:
+            return True
+        return False
+    
+    def load_raw_key(
+        self,
+        key_type: KeyType,
+        raw_key: bytes,
+        algorithm: AlgorithmAttributes
+    ) -> bool:
+        """
+        Load raw key material (32 bytes for Ed25519/X25519, or RSA CRT format).
+        
+        Args:
+            key_type: The key slot type
+            raw_key: The raw private key bytes
+            algorithm: Algorithm attributes for the key
+            
+        Returns:
+            True if key was loaded successfully
+        """
+        if not raw_key:
+            return False
+        
+        # Handle RSA keys (algorithm_id == 0x01)
+        if algorithm.algorithm_id == AlgorithmID.RSA_2048:
+            return self._load_raw_rsa_key(key_type, raw_key, algorithm)
+        
+        # X25519 keys from OpenPGP are in big-endian (MPI format),
+        # but the cryptography library expects little-endian.
+        # We need to reverse the byte order for X25519 keys.
+        if algorithm.algorithm_id == AlgorithmID.ECDH_X25519 and len(raw_key) == 32:
+            raw_key = bytes(reversed(raw_key))
+            logger.debug(f"Reversed byte order for X25519 key")
+        
+        self._raw_private_keys[key_type] = raw_key
+        self._algorithm_info[key_type] = algorithm
+        logger.info(f"Loaded raw key for {key_type.name}, {len(raw_key)} bytes, algo={algorithm.algorithm_id}")
+        return True
+    
+    def _load_raw_rsa_key(
+        self,
+        key_type: KeyType,
+        raw_key: bytes,
+        algorithm: AlgorithmAttributes
+    ) -> bool:
+        """
+        Load RSA key from raw CRT format data.
+        
+        The RSA key data from OpenPGP imports contains:
+        - Public exponent (e) - typically 3 bytes (010001 = 65537)
+        - CRT components: p, q concatenated
+        
+        The format is: e (3 bytes) || p (key_size/16 bytes) || q (key_size/16 bytes)
+        For RSA-4096: e (3 bytes) + p (256 bytes) + q (256 bytes) = 515 bytes
+        For RSA-2048: e (3 bytes) + p (128 bytes) + q (128 bytes) = 259 bytes
+        """
+        try:
+            from cryptography.hazmat.primitives.asymmetric.rsa import (
+                rsa_crt_iqmp, rsa_crt_dmp1, rsa_crt_dmq1,
+                RSAPrivateNumbers, RSAPublicNumbers
+            )
+            from cryptography.hazmat.backends import default_backend
+            
+            # Determine key size from algorithm attributes
+            key_bits = algorithm.param1  # e.g., 4096 or 2048
+            component_size = key_bits // 16  # p and q are half the key size in bytes
+            
+            # Parse the key data
+            # Format: e || p || q
+            e_size = 3  # Public exponent is typically 3 bytes (65537 = 010001)
+            
+            if len(raw_key) < e_size + 2 * component_size:
+                logger.warning(f"RSA key data too short: {len(raw_key)} bytes, expected at least {e_size + 2 * component_size}")
+                return False
+            
+            e = int.from_bytes(raw_key[:e_size], 'big')
+            p = int.from_bytes(raw_key[e_size:e_size + component_size], 'big')
+            q = int.from_bytes(raw_key[e_size + component_size:e_size + 2 * component_size], 'big')
+            
+            # Calculate derived values
+            n = p * q
+            d = pow(e, -1, (p - 1) * (q - 1))  # Private exponent
+            dp = rsa_crt_dmp1(d, p)
+            dq = rsa_crt_dmq1(d, q)
+            qinv = rsa_crt_iqmp(p, q)
+            
+            # Create RSA private key
+            public_numbers = RSAPublicNumbers(e, n)
+            private_numbers = RSAPrivateNumbers(p, q, d, dp, dq, qinv, public_numbers)
+            private_key = private_numbers.private_key(default_backend())
+            
+            # Store as DER-encoded private key for later use
+            from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
+            der_key = private_key.private_bytes(Encoding.DER, PrivateFormat.PKCS8, NoEncryption())
+            
+            # Store in the keys dict for RSA operations
+            self._keys[key_type] = der_key
+            self._algorithm_info[key_type] = algorithm
+            
+            logger.info(f"Loaded RSA-{key_bits} key for {key_type.name}, {len(raw_key)} bytes -> DER {len(der_key)} bytes")
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Failed to load RSA key: {e}")
+            return False
+    
+    def sign_raw(
+        self,
+        data: bytes,
+        key_type: KeyType = KeyType.SIGNATURE
+    ) -> SignatureResult:
+        """
+        Sign using raw key (Ed25519 or RSA).
+        
+        Args:
+            data: The data to sign (for RSA, this should be DigestInfo)
+            key_type: The key slot to use
+            
+        Returns:
+            SignatureResult with signature bytes
+        """
+        # Check for RSA key first (stored in self._keys as DER)
+        rsa_key = self._keys.get(key_type)
+        if rsa_key is not None:
+            return self._sign_rsa(data, rsa_key)
+        
+        # Then check for Ed25519 raw key
+        raw_key = self._raw_private_keys.get(key_type)
+        if raw_key is None:
+            return SignatureResult(b'', False, "No raw key loaded")
+        
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+            
+            # Create Ed25519 private key from raw 32 bytes
+            private_key = Ed25519PrivateKey.from_private_bytes(raw_key)
+            signature = private_key.sign(data)
+            
+            logger.debug(f"Raw Ed25519 signature: {len(signature)} bytes")
+            return SignatureResult(signature, True)
+            
+        except Exception as e:
+            logger.exception(f"Raw signing failed: {e}")
+            return SignatureResult(b'', False, str(e))
+    
+    def _sign_rsa(self, data: bytes, der_key: bytes) -> SignatureResult:
+        """
+        Sign using RSA key (PKCS#1 v1.5 padding).
+        
+        For OpenPGP cards, we receive DigestInfo and apply raw PKCS#1 v1.5 padding,
+        then perform raw RSA decryption (signing = decryption with private key).
+        
+        Args:
+            data: The DigestInfo to sign (algorithm OID + hash value)
+            der_key: DER-encoded RSA private key
+            
+        Returns:
+            SignatureResult with signature bytes
+        """
+        try:
+            from cryptography.hazmat.primitives.serialization import load_der_private_key
+            from cryptography.hazmat.backends import default_backend
+            
+            private_key = load_der_private_key(der_key, password=None, backend=default_backend())
+            
+            # Get key size in bytes
+            key_size = private_key.key_size // 8  # type: ignore[union-attr]
+            
+            # Build PKCS#1 v1.5 padding manually:
+            # 0x00 || 0x01 || padding_bytes(0xFF) || 0x00 || DigestInfo
+            # Padding length = key_size - 3 - len(data)
+            
+            padding_length = key_size - 3 - len(data)
+            if padding_length < 8:
+                return SignatureResult(b'', False, f"DigestInfo too long for key size: {len(data)} + 3 > {key_size}")
+            
+            # Build the padded message
+            padded = b'\x00\x01' + (b'\xff' * padding_length) + b'\x00' + data
+            
+            # Convert to integer and do raw RSA decryption (signing)
+            padded_int = int.from_bytes(padded, 'big')
+            
+            # Get the RSA private numbers for raw operation
+            private_numbers = private_key.private_numbers()  # type: ignore[union-attr]
+            
+            # RSA signature: m^d mod n
+            signature_int = pow(padded_int, private_numbers.d, private_numbers.public_numbers.n)
+            
+            # Convert back to bytes
+            signature = signature_int.to_bytes(key_size, 'big')
+            
+            logger.debug(f"RSA signature: {len(signature)} bytes (key_size={key_size}, digest_info={len(data)} bytes)")
+            return SignatureResult(signature, True)
+            
+        except Exception as e:
+            logger.exception(f"RSA signing failed: {e}")
+            return SignatureResult(b'', False, str(e))
+            return SignatureResult(b'', False, str(e))
+    
+    def decrypt_ecdh(
+        self,
+        ephemeral_public: bytes,
+        key_type: KeyType = KeyType.DECRYPTION
+    ) -> DecryptionResult:
+        """
+        Perform X25519 ECDH to derive shared secret.
+        
+        Args:
+            ephemeral_public: The ephemeral public key from the encrypted message (32 bytes)
+            key_type: The key slot to use
+            
+        Returns:
+            DecryptionResult with 32-byte shared secret
+        """
+        raw_key = self._raw_private_keys.get(key_type)
+        if raw_key is None:
+            return DecryptionResult(b'', False, "No raw key loaded")
+        
+        try:
+            from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+            
+            # Create X25519 private key from raw 32 bytes
+            private_key = X25519PrivateKey.from_private_bytes(raw_key)
+            
+            # Create peer's public key
+            peer_public = X25519PublicKey.from_public_bytes(ephemeral_public)
+            
+            # Perform ECDH key exchange
+            shared_secret = private_key.exchange(peer_public)
+            
+            logger.debug(f"ECDH shared secret: {len(shared_secret)} bytes")
+            return DecryptionResult(shared_secret, True)
+            
+        except Exception as e:
+            logger.exception(f"ECDH decryption failed: {e}")
+            return DecryptionResult(b'', False, str(e))
 
 
 class SimpleCryptoBackend:
@@ -654,10 +952,13 @@ class SimpleCryptoBackend:
         
         try:
             from cryptography.hazmat.primitives.asymmetric import padding  # type: ignore[import-not-found]
+            from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey  # type: ignore[import-not-found]
             from cryptography.hazmat.primitives.serialization import load_der_private_key  # type: ignore[import-not-found]
             from cryptography.hazmat.backends import default_backend  # type: ignore[import-not-found]
             
             private_key = load_der_private_key(priv_data, password=None, backend=default_backend())
+            if not isinstance(private_key, RSAPrivateKey):
+                return DecryptionResult(b'', False, "Key is not an RSA private key")
             plaintext = private_key.decrypt(
                 ciphertext,
                 padding.PKCS1v15()
@@ -694,6 +995,51 @@ class SimpleCryptoBackend:
     def has_key(self, key_type: KeyType) -> bool:
         """Check if key is loaded."""
         return key_type in self._keys
+    
+    def has_raw_key(self, key_type: KeyType) -> bool:
+        """Check if a raw key is loaded."""
+        return key_type in self._keys
+    
+    def load_raw_key(
+        self,
+        key_type: KeyType,
+        raw_key: bytes,
+        algorithm: AlgorithmAttributes
+    ) -> bool:
+        """Load raw key material."""
+        if raw_key:
+            self._keys[key_type] = raw_key
+            return True
+        return False
+    
+    def sign_raw(
+        self,
+        data: bytes,
+        key_type: KeyType = KeyType.SIGNATURE
+    ) -> SignatureResult:
+        """Sign using raw Ed25519 key."""
+        return self.sign(data, key_type)
+    
+    def decrypt_ecdh(
+        self,
+        ephemeral_public: bytes,
+        key_type: KeyType = KeyType.DECRYPTION
+    ) -> DecryptionResult:
+        """Perform X25519 ECDH."""
+        raw_key = self._keys.get(key_type)
+        if not raw_key:
+            return DecryptionResult(b'', False, "Key not loaded")
+        
+        try:
+            from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+            
+            private_key = X25519PrivateKey.from_private_bytes(raw_key)
+            peer_public = X25519PublicKey.from_public_bytes(ephemeral_public)
+            shared_secret = private_key.exchange(peer_public)
+            return DecryptionResult(shared_secret, True)
+            
+        except Exception as e:
+            return DecryptionResult(b'', False, str(e))
 
 
 def get_crypto_backend() -> Union[CryptoBackend, SimpleCryptoBackend]:

@@ -14,7 +14,7 @@ from typing import Callable, Optional
 from .apdu import (SW, APDUCommand, APDUError, APDUParser, APDUResponse,
                    OpenPGPIns)
 from .atr import DEFAULT_ATR
-from .card_data import AlgorithmID, CardDataStore, CardholderData, CardState
+from .card_data import AlgorithmAttributes, AlgorithmID, CardDataStore, CardholderData, CardState
 from .crypto_backend import (CryptoBackend, DecryptionResult, GeneratedKey,
                              KeyType, SignatureResult, SimpleCryptoBackend,
                              get_crypto_backend)
@@ -89,27 +89,52 @@ class OpenPGPCard:
         
         # Load signature key
         if state.key_sig.private_key_data:
-            self._crypto.load_key(
-                KeyType.SIGNATURE,
-                state.key_sig.private_key_data,
-                state.key_sig.algorithm
-            )
+            key_data = state.key_sig.private_key_data
+            # For raw 32-byte keys (Ed25519/X25519), use load_raw_key
+            if len(key_data) == 32:
+                self._crypto.load_raw_key(
+                    KeyType.SIGNATURE,
+                    key_data,
+                    state.key_sig.algorithm
+                )
+            else:
+                self._crypto.load_key(
+                    KeyType.SIGNATURE,
+                    key_data,
+                    state.key_sig.algorithm
+                )
         
         # Load decryption key
         if state.key_dec.private_key_data:
-            self._crypto.load_key(
-                KeyType.DECRYPTION,
-                state.key_dec.private_key_data,
-                state.key_dec.algorithm
-            )
+            key_data = state.key_dec.private_key_data
+            if len(key_data) == 32:
+                self._crypto.load_raw_key(
+                    KeyType.DECRYPTION,
+                    key_data,
+                    state.key_dec.algorithm
+                )
+            else:
+                self._crypto.load_key(
+                    KeyType.DECRYPTION,
+                    key_data,
+                    state.key_dec.algorithm
+                )
         
         # Load authentication key
         if state.key_aut.private_key_data:
-            self._crypto.load_key(
-                KeyType.AUTHENTICATION,
-                state.key_aut.private_key_data,
-                state.key_aut.algorithm
-            )
+            key_data = state.key_aut.private_key_data
+            if len(key_data) == 32:
+                self._crypto.load_raw_key(
+                    KeyType.AUTHENTICATION,
+                    key_data,
+                    state.key_aut.algorithm
+                )
+            else:
+                self._crypto.load_key(
+                    KeyType.AUTHENTICATION,
+                    key_data,
+                    state.key_aut.algorithm
+                )
     
     def save_state(self) -> None:
         """Save card state to persistent storage."""
@@ -122,8 +147,10 @@ class OpenPGPCard:
         self._response_buffer = b''
         self._command_buffer = b''
         self._chaining_ins = None
-        self._security.reset()
-        logger.info("Card powered on")
+        # Note: We do NOT reset security state on power on
+        # This allows PIN verification to persist across reader reconnections
+        # which is common with virtual cards via pcscd
+        logger.info("Card powered on - security state preserved")
     
     def power_off(self) -> None:
         """Handle card power off."""
@@ -140,6 +167,9 @@ class OpenPGPCard:
         """
         Handle card reset.
         
+        According to OpenPGP spec, warm reset should maintain the security
+        state (verified PINs). Only cold reset (power cycle) should clear it.
+        
         Returns:
             The ATR to send
         """
@@ -147,8 +177,9 @@ class OpenPGPCard:
         self._response_buffer = b''
         self._command_buffer = b''
         self._chaining_ins = None
-        self._security.reset()
-        logger.info("Card reset")
+        # Note: We do NOT reset security state on warm reset
+        # This allows PIN verification to persist across reader reconnections
+        logger.info("Card reset (warm) - security state preserved")
         return self.atr
     
     def get_atr(self) -> bytes:
@@ -170,8 +201,15 @@ class OpenPGPCard:
         Returns:
             The response bytes (data + SW)
         """
+        import sys
         try:
+            logger.info(f"Parsing APDU: {raw_apdu[:20].hex()}...")
+            sys.stdout.flush()
+            sys.stderr.flush()
             cmd = APDUParser.parse(raw_apdu)
+            logger.info(f"Parsed cmd INS={cmd.ins:02X}, data_len={len(cmd.data)}")
+            sys.stdout.flush()
+            sys.stderr.flush()
             logger.debug(f"Processing: {cmd}")
             
             # Handle command chaining
@@ -262,7 +300,7 @@ class OpenPGPCard:
         }
         
         handler = handlers.get(cmd.ins)
-        print(handler)
+
         if handler is not None:
             return handler(cmd)
         
@@ -333,11 +371,13 @@ class OpenPGPCard:
         
         elif tag == 0x006E:  # Application Related Data
             data = self._build_application_related_data()
-            return APDUResponse.success(data)
+            # Wrap with 6E tag as per OpenPGP spec - the response includes the tag
+            return APDUResponse.success(TLVEncoder.encode(0x6E, data))
         
         elif tag == 0x007A:  # Security Support Template
             data = self._build_security_support_template()
-            return APDUResponse.success(data)
+            # Wrap with 7A tag as per OpenPGP spec
+            return APDUResponse.success(TLVEncoder.encode(0x7A, data))
         
         elif tag == 0x00C4:  # PW Status Bytes
             return APDUResponse.success(state.get_pw_status_bytes())
@@ -393,20 +433,21 @@ class OpenPGPCard:
         state = self.card_state
         
         # Build sub-DOs
-        result = b''
+        inner = b''
         
         # 5B - Name
         name_bytes = state.cardholder.name.encode('latin-1', errors='replace')
-        result += TLVEncoder.encode(0x5B, name_bytes)
+        inner += TLVEncoder.encode(0x5B, name_bytes)
         
         # 5F2D - Language preference
         lang_bytes = state.cardholder.language.encode('ascii', errors='replace')
-        result += TLVEncoder.encode(0x5F2D, lang_bytes)
+        inner += TLVEncoder.encode(0x5F2D, lang_bytes)
         
         # 5F35 - Sex
-        result += TLVEncoder.encode(0x5F35, bytes([state.cardholder.sex]))
+        inner += TLVEncoder.encode(0x5F35, bytes([state.cardholder.sex]))
         
-        return result
+        # Wrap with outer tag 65
+        return TLVEncoder.encode(0x65, inner)
     
     def _build_application_related_data(self) -> bytes:
         """Build Application Related Data (tag 6E)."""
@@ -442,6 +483,34 @@ class OpenPGPCard:
         # 93 - Digital Signature Counter
         return TLVEncoder.encode(0x93, state.get_signature_counter_bytes())
     
+    def _parse_algorithm_attributes(self, data: bytes) -> AlgorithmAttributes:
+        """Parse algorithm attributes from PUT DATA command."""
+        if not data:
+            return AlgorithmAttributes.rsa()
+        
+        algo_id = data[0]
+        
+        if algo_id == AlgorithmID.RSA_2048:
+            # RSA: 01 || modulus_bits (2 bytes) || exponent_bits (2 bytes) || format
+            if len(data) >= 5:
+                mod_bits = (data[1] << 8) | data[2]
+                exp_bits = (data[3] << 8) | data[4]
+                fmt = data[5] if len(data) > 5 else 0
+                return AlgorithmAttributes(
+                    algorithm_id=algo_id,
+                    param1=mod_bits,
+                    param2=exp_bits,
+                    param3=fmt
+                )
+            return AlgorithmAttributes.rsa()
+        else:
+            # ECC: algorithm_id || OID
+            curve_oid = data[1:] if len(data) > 1 else b''
+            return AlgorithmAttributes(
+                algorithm_id=algo_id,
+                curve_oid=curve_oid
+            )
+
     def _handle_verify(self, cmd: APDUCommand) -> APDUResponse:
         """Handle VERIFY command."""
         if not self.selected:
@@ -450,7 +519,7 @@ class OpenPGPCard:
         # P2 indicates which PIN: 0x81=PW1(sign), 0x82=PW1(decrypt), 0x83=PW3
         pin_ref = cmd.p2
         
-        logger.info(f"VERIFY for PIN reference {pin_ref:02X}")
+        logger.info(f"VERIFY for PIN reference {pin_ref:02X}, data_len={len(cmd.data)}")
         
         # Check if it's a valid PIN reference
         if pin_ref not in (PINRef.PW1_SIGN, PINRef.PW1_DECRYPT, PINRef.PW3):
@@ -466,8 +535,12 @@ class OpenPGPCard:
                 return APDUResponse.error(SW.counter_warning(retries))
         
         # Verify the PIN
-        pin = cmd.data.decode('utf-8', errors='replace')
+        # Strip potential padding bytes (0x00 or 0xFF) from the PIN data
+        pin_data = cmd.data.rstrip(b'\x00').rstrip(b'\xff')
+        pin = pin_data.decode('utf-8', errors='replace')
+        logger.info(f"VERIFY: raw data={cmd.data.hex()}, stripped={pin_data.hex()}, pin='{pin}'")
         result = self._security.verify_pin(pin_ref, pin)
+        logger.info(f"VERIFY result: {result}")
         
         if result.is_success:
             self.save_state()
@@ -640,6 +713,78 @@ class OpenPGPCard:
                 if len(data) >= 1:
                     state.pin_data.pw1_valid_multiple = (data[0] != 0x00)
             
+            elif tag == 0x00C1:  # Algorithm Attributes - Signature
+                state.key_sig.algorithm = self._parse_algorithm_attributes(data)
+                logger.info(f"Set SIG algorithm attributes: {data.hex()}")
+            
+            elif tag == 0x00C2:  # Algorithm Attributes - Decryption
+                state.key_dec.algorithm = self._parse_algorithm_attributes(data)
+                logger.info(f"Set DEC algorithm attributes: {data.hex()}")
+            
+            elif tag == 0x00C3:  # Algorithm Attributes - Authentication
+                state.key_aut.algorithm = self._parse_algorithm_attributes(data)
+                logger.info(f"Set AUT algorithm attributes: {data.hex()}")
+            
+            elif tag == 0x00C7:  # Fingerprint - Signature key
+                if len(data) == 20:
+                    state.key_sig.fingerprint = data
+                    logger.info(f"Set SIG fingerprint: {data.hex()}")
+                else:
+                    return APDUResponse.error(SW.WRONG_LENGTH)
+            
+            elif tag == 0x00C8:  # Fingerprint - Decryption key
+                if len(data) == 20:
+                    state.key_dec.fingerprint = data
+                    logger.info(f"Set DEC fingerprint: {data.hex()}")
+                else:
+                    return APDUResponse.error(SW.WRONG_LENGTH)
+            
+            elif tag == 0x00C9:  # Fingerprint - Authentication key
+                if len(data) == 20:
+                    state.key_aut.fingerprint = data
+                    logger.info(f"Set AUT fingerprint: {data.hex()}")
+                else:
+                    return APDUResponse.error(SW.WRONG_LENGTH)
+            
+            elif tag == 0x00CA:  # CA Fingerprint 1
+                if len(data) == 20:
+                    state.key_sig.ca_fingerprint = data
+                else:
+                    return APDUResponse.error(SW.WRONG_LENGTH)
+            
+            elif tag == 0x00CB:  # CA Fingerprint 2
+                if len(data) == 20:
+                    state.key_dec.ca_fingerprint = data
+                else:
+                    return APDUResponse.error(SW.WRONG_LENGTH)
+            
+            elif tag == 0x00CC:  # CA Fingerprint 3
+                if len(data) == 20:
+                    state.key_aut.ca_fingerprint = data
+                else:
+                    return APDUResponse.error(SW.WRONG_LENGTH)
+            
+            elif tag == 0x00CE:  # Generation timestamp - Signature key
+                if len(data) == 4:
+                    state.key_sig.generation_time = int.from_bytes(data, 'big')
+                    logger.info(f"Set SIG timestamp: {state.key_sig.generation_time}")
+                else:
+                    return APDUResponse.error(SW.WRONG_LENGTH)
+            
+            elif tag == 0x00CF:  # Generation timestamp - Decryption key
+                if len(data) == 4:
+                    state.key_dec.generation_time = int.from_bytes(data, 'big')
+                    logger.info(f"Set DEC timestamp: {state.key_dec.generation_time}")
+                else:
+                    return APDUResponse.error(SW.WRONG_LENGTH)
+            
+            elif tag == 0x00D0:  # Generation timestamp - Authentication key
+                if len(data) == 4:
+                    state.key_aut.generation_time = int.from_bytes(data, 'big')
+                    logger.info(f"Set AUT timestamp: {state.key_aut.generation_time}")
+                else:
+                    return APDUResponse.error(SW.WRONG_LENGTH)
+            
             else:
                 logger.warning(f"Unknown PUT DATA tag: {tag:04X}")
                 return APDUResponse.error(SW.REFERENCED_DATA_NOT_FOUND)
@@ -652,15 +797,146 @@ class OpenPGPCard:
             return APDUResponse.error(SW.WRONG_DATA)
     
     def _handle_put_data_odd(self, cmd: APDUCommand) -> APDUResponse:
-        """Handle PUT DATA command (odd instruction, for key import)."""
+        """Handle PUT DATA command (odd instruction, for key import).
+        
+        INS=0xDB with P1=0x3F, P2=0xFF is used for importing keys.
+        Data format: Extended Header List (4D) containing:
+        - CRT tag (B6/B8/A4) identifying key slot
+        - 7F48 (Public Key DO) with key components
+        - 5F48 (Concatenated Key Data) with actual key data
+        """
+        import sys
         if not self.selected:
             return APDUResponse.error(SW.CONDITIONS_NOT_SATISFIED)
         
-        logger.info("PUT DATA (key import)")
+        logger.info(f"PUT DATA ODD P1={cmd.p1:02X} P2={cmd.p2:02X}")
+        sys.stdout.flush()
+        sys.stderr.flush()
         
-        # TODO: Implement key import in Phase 3
-        return APDUResponse.error(SW.SECURITY_STATUS_NOT_SATISFIED)
+        # Key import requires PW3
+        if not self._security.is_pw3_verified():
+            logger.warning("PUT DATA ODD: PW3 not verified")
+            return APDUResponse.error(SW.SECURITY_STATUS_NOT_SATISFIED)
+        
+        # P1=3F, P2=FF means extended header list format for key import
+        if cmd.p1 == 0x3F and cmd.p2 == 0xFF:
+            return self._handle_key_import(cmd.data)
+        
+        logger.warning(f"PUT DATA ODD: Unknown P1/P2 combination {cmd.p1:02X}/{cmd.p2:02X}")
+        return APDUResponse.error(SW.INCORRECT_P1_P2)
     
+    def _handle_key_import(self, data: bytes) -> APDUResponse:
+        """Handle key import from Extended Header List format.
+        
+        The data format is:
+        4D xx (Extended Header List)
+          ├─ CRT tag (B6/B8/A4) identifying which key slot
+          ├─ 7F48 xx (Public Key Components DO)
+          │    └─ 92 xx (Private key template indicator)
+          └─ 5F48 xx (Concatenated Key Data)
+               └─ actual private key material
+        """
+        import sys
+        logger.info(f"Key import data: {data[:50].hex()}...")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
+        try:
+            # Parse the Extended Header List
+            if not data or data[0] != 0x4D:
+                logger.warning("Key import: Missing Extended Header List tag (4D)")
+                return APDUResponse.error(SW.WRONG_DATA)
+            
+            # Parse TLV structure
+            tlvs = TLVParser.parse(data)
+            if not tlvs:
+                return APDUResponse.error(SW.WRONG_DATA)
+            
+            # Find the Extended Header List (4D)
+            ext_header = tlvs[0]
+            if ext_header.tag != 0x4D:
+                return APDUResponse.error(SW.WRONG_DATA)
+            
+            # Parse children of Extended Header List
+            children = TLVParser.parse(ext_header.value)
+            
+            # Find CRT tag to identify key slot
+            key_slot = None
+            crt_tag = None
+            for child in children:
+                if child.tag == 0xB6:
+                    key_slot = self.card_state.key_sig
+                    crt_tag = 0xB6
+                    break
+                elif child.tag == 0xB8:
+                    key_slot = self.card_state.key_dec
+                    crt_tag = 0xB8
+                    break
+                elif child.tag == 0xA4:
+                    key_slot = self.card_state.key_aut
+                    crt_tag = 0xA4
+                    break
+            
+            if key_slot is None:
+                logger.warning("Key import: No valid CRT tag found (B6/B8/A4)")
+                return APDUResponse.error(SW.WRONG_DATA)
+            
+            logger.info(f"Key import: CRT tag {crt_tag:02X}")
+            
+            # Find the key data (5F48)
+            key_data = None
+            for child in children:
+                if child.tag == 0x5F48:
+                    key_data = child.value
+                    break
+            
+            if key_data is None:
+                # Some implementations put 5F48 directly at top level
+                for child in children:
+                    if child.tag == 0x7F48:
+                        # Parse the public key template
+                        pub_tlvs = TLVParser.parse(child.value)
+                        for pt in pub_tlvs:
+                            if pt.tag == 0x5F48:
+                                key_data = pt.value
+                                break
+            
+            if key_data:
+                # Store the private key data
+                key_slot.private_key_data = key_data
+                logger.info(f"Key import: Stored {len(key_data)} bytes of key data")
+                
+                # Load the key into crypto backend
+                key_type_map: dict[int, KeyType] = {
+                    0xB6: KeyType.SIGNATURE,
+                    0xB8: KeyType.DECRYPTION,
+                    0xA4: KeyType.AUTHENTICATION,
+                }
+                key_type = key_type_map.get(crt_tag) if crt_tag is not None else None
+                if key_type and self._crypto:
+                    try:
+                        # Get algorithm attributes for this key slot
+                        algorithm = key_slot.algorithm
+                        
+                        # Use load_raw_key for all imported keys (Ed25519/X25519/RSA)
+                        # This handles:
+                        # - 32-byte Ed25519/X25519 keys
+                        # - RSA keys in CRT format (e.g., 515 bytes for RSA-4096)
+                        self._crypto.load_raw_key(key_type, key_data, algorithm)
+                        logger.info(f"Key import: Loaded raw key ({len(key_data)} bytes) into crypto backend for {key_type.name}")
+                    except Exception as e:
+                        logger.warning(f"Key import: Failed to load key into crypto backend: {e}")
+            
+            self.save_state()
+            return APDUResponse.success()
+            
+            self.save_state()
+            return APDUResponse.success()
+            
+        except Exception as e:
+            logger.warning(f"Key import error: {e}")
+            return APDUResponse.error(SW.WRONG_DATA)
+
     def _handle_generate_key(self, cmd: APDUCommand) -> APDUResponse:
         """
         Handle GENERATE ASYMMETRIC KEY PAIR command (INS 0x47).
@@ -807,8 +1083,11 @@ class OpenPGPCard:
         
         logger.debug(f"Signing {len(data)} bytes of data")
         
-        # Perform signature
-        result = self._crypto.sign(data, KeyType.SIGNATURE)
+        # Perform signature - use raw key if available, otherwise use PEM key
+        if self._crypto.has_raw_key(KeyType.SIGNATURE):
+            result = self._crypto.sign_raw(data, KeyType.SIGNATURE)
+        else:
+            result = self._crypto.sign(data, KeyType.SIGNATURE)
         
         if not result.success:
             logger.error(f"Signing failed: {result.error}")
@@ -840,7 +1119,7 @@ class OpenPGPCard:
         First byte indicates padding:
             0x00 = PKCS#1 v1.5 padding (RSA)
             0x02 = ECDH cipher
-            0xA6 = Wrapped in DO for AES key
+            0xA6 = ECDH cipher wrapped (X25519)
         """
         logger.info("PSO: DECIPHER")
         
@@ -859,12 +1138,34 @@ class OpenPGPCard:
         
         # Check padding indicator
         padding_indicator = data[0]
-        ciphertext = data[1:]
         
-        logger.debug(f"Deciphering {len(ciphertext)} bytes, padding={padding_indicator:02X}")
+        logger.debug(f"Deciphering {len(data)} bytes, padding={padding_indicator:02X}")
         
-        # Perform decryption
-        result = self._crypto.decrypt(ciphertext, KeyType.DECRYPTION)
+        if padding_indicator == 0xA6:
+            # ECDH decryption (X25519)
+            # Format: A6 <len> 7F49 <len> 86 <len> <ephemeral_public_key>
+            ephemeral_public = self._parse_ecdh_cipher(data)
+            if ephemeral_public is None:
+                logger.error("Failed to parse ECDH cipher data")
+                return APDUResponse.error(SW.WRONG_DATA)
+            
+            logger.debug(f"ECDH ephemeral public key: {len(ephemeral_public)} bytes")
+            
+            # Use raw key ECDH if available
+            if self._crypto.has_raw_key(KeyType.DECRYPTION):
+                result = self._crypto.decrypt_ecdh(ephemeral_public, KeyType.DECRYPTION)
+            else:
+                # Fall back to standard decrypt (won't work for ECDH without raw key)
+                result = self._crypto.decrypt(data[1:], KeyType.DECRYPTION)
+        elif padding_indicator == 0x00:
+            # RSA PKCS#1 v1.5 padding
+            ciphertext = data[1:]
+            result = self._crypto.decrypt(ciphertext, KeyType.DECRYPTION)
+        else:
+            logger.warning(f"Unknown padding indicator: {padding_indicator:02X}")
+            # Try standard decrypt
+            ciphertext = data[1:]
+            result = self._crypto.decrypt(ciphertext, KeyType.DECRYPTION)
         
         if not result.success:
             logger.error(f"Decryption failed: {result.error}")
@@ -879,6 +1180,58 @@ class OpenPGPCard:
             return APDUResponse.more_data(result.plaintext[:cmd.le], remaining)
         
         return APDUResponse.success(result.plaintext)
+    
+    def _parse_ecdh_cipher(self, data: bytes) -> Optional[bytes]:
+        """
+        Parse ECDH cipher data structure to extract ephemeral public key.
+        
+        Format: A6 <len> 7F49 <len> 86 <len> <public_key_point>
+        
+        Args:
+            data: The full cipher data starting with A6 tag
+            
+        Returns:
+            The 32-byte ephemeral public key, or None on parse error
+        """
+        if len(data) < 6:
+            return None
+        
+        idx = 0
+        
+        # Skip A6 tag and length
+        if data[idx] != 0xA6:
+            return None
+        idx += 1
+        
+        # Parse length (may be 1 or 2 bytes)
+        if data[idx] & 0x80:
+            len_bytes = data[idx] & 0x7F
+            idx += 1 + len_bytes
+        else:
+            idx += 1
+        
+        # Look for 7F49 tag
+        while idx < len(data) - 4:
+            if data[idx] == 0x7F and data[idx + 1] == 0x49:
+                idx += 2
+                # Skip length
+                if data[idx] & 0x80:
+                    len_bytes = data[idx] & 0x7F
+                    idx += 1 + len_bytes
+                else:
+                    idx += 1
+                
+                # Look for 86 tag (public key point)
+                if idx < len(data) - 2 and data[idx] == 0x86:
+                    idx += 1
+                    key_len = data[idx]
+                    idx += 1
+                    if idx + key_len <= len(data):
+                        return data[idx:idx + key_len]
+                break
+            idx += 1
+        
+        return None
     
     def _handle_internal_authenticate(self, cmd: APDUCommand) -> APDUResponse:
         """

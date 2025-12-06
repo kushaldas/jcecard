@@ -220,24 +220,25 @@ def create_simple_atr() -> bytes:
 
 
 # Default ATR for the virtual OpenPGP card
+# This ATR indicates both T=0 and T=1 protocol support for maximum compatibility
+# Structure: TS T0 TD1 TD2 [historical bytes] TCK
+# - T0 = 0x88: TD1 present (0x80), 8 historical bytes (0x08)
+# - TD1 = 0x80: T=0 protocol, more interface bytes follow (TD2 present)
+# - TD2 = 0x01: T=1 protocol, no more interface bytes
 DEFAULT_ATR = bytes([
     0x3B,  # TS: Direct convention
-    0xDA,  # T0: TA1, TD1 present, 10 historical bytes
-    0x18,  # TA1: Fi=1, Di=8 (faster communication)
-    0xFF,  # TD1: T=15 (no protocol type)
-    0x81,  # TD2: T=1
-    0xB1,  # TA3: IFSC = 177
-    0xFE,  # TB3: BWI=15, CWI=14
-    0x75,  # Historical byte: Card issuer
-    0x1F,  # Historical byte
-    0x03,  # Historical byte: OpenPGP version high
-    0x04,  # Historical byte: OpenPGP version low (3.4)
-    0x68,  # Historical byte
-    0x65,  # Historical byte
-    0x6C,  # Historical byte
-    0x6C,  # Historical byte
-    0x6F,  # Historical byte ("hello")
-    0x21,  # TCK: Checksum
+    0x88,  # T0: TD1 present (0x80), 8 historical bytes (0x08)
+    0x80,  # TD1: T=0 protocol, TD2 will follow
+    0x01,  # TD2: T=1 protocol, no more interface bytes
+    0x68,  # Historical byte: 'h'
+    0x65,  # Historical byte: 'e'
+    0x6C,  # Historical byte: 'l'
+    0x6C,  # Historical byte: 'l'
+    0x6F,  # Historical byte: 'o'
+    0x47,  # Historical byte: 'G'
+    0x50,  # Historical byte: 'P'
+    0x47,  # Historical byte: 'G'
+    0x3B,  # TCK: Checksum (XOR of all bytes from T0)
 ])
 
 
