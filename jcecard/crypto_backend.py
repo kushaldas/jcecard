@@ -1,48 +1,25 @@
 """
 Cryptographic Backend Module
 
-Provides cryptographic operations using johnnycanencrypt for:
+Provides cryptographic operations using Python's cryptography library for:
 - Key generation (RSA, ECC/Curve25519)
-- Digital signatures
-- Decryption
+- Digital signatures (Ed25519, RSA PKCS#1 v1.5)
+- Decryption (RSA PKCS#1 v1.5, X25519 ECDH)
 - Key fingerprint calculation
 
-Usage:
-    from johnnycanencrypt import Cipher, create_key, parse_cert_bytes
-    from johnnycanencrypt.johnnycanencrypt import Johnny, create_key as jce_create_key
+This implementation uses only the cryptography library, no johnnycanencrypt dependency.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import time
 from dataclasses import dataclass
-from typing import Optional, Callable, Any, Union, TYPE_CHECKING
+from typing import Optional, Union
 from enum import IntEnum
 
-# Type alias matching johnnycanencrypt.pyi
-# KeyData = tuple[list[dict[Any, Any]], str, bool, datetime | None, datetime, dict[Any, Any]]
-
-# Import johnnycanencrypt - the library is fully typed
-try:
-    from johnnycanencrypt import Cipher
-    from johnnycanencrypt.johnnycanencrypt import (
-        Johnny,
-        create_key as jce_create_key,
-        parse_cert_bytes as jce_parse_cert_bytes,
-    )
-    CRYPTO_AVAILABLE = True
-except ImportError:
-    CRYPTO_AVAILABLE = False
-    # Define stub types for when library is not available
-    Cipher = None  # type: ignore[assignment, misc]
-    Johnny = None  # type: ignore[assignment, misc]
-    jce_create_key: Optional[Callable[..., tuple[str, str, str]]] = None
-    jce_parse_cert_bytes: Optional[Callable[..., Any]] = None
-
-from .card_data import KeySlot, AlgorithmAttributes, AlgorithmID, CurveOID
+from .card_data import AlgorithmAttributes, AlgorithmID
 
 
 logger = logging.getLogger(__name__)
@@ -58,10 +35,13 @@ class KeyType(IntEnum):
 @dataclass
 class GeneratedKey:
     """Result of key generation."""
-    public_key_data: bytes  # Public key in OpenPGP card format
-    private_key_data: bytes  # Private key data for storage
+    public_key_data: bytes  # Public key in OpenPGP card format (TLV 7F49)
+    private_key_data: bytes  # Private key data for storage (raw bytes for ECC, DER for RSA)
     fingerprint: bytes      # 20-byte SHA-1 fingerprint
     generation_time: int    # Unix timestamp
+    raw_private_key: Optional[bytes] = None  # Raw 32-byte key for Ed25519/X25519
+    raw_public_key: Optional[bytes] = None   # Raw 32-byte public key
+    openpgp_public_key: Optional[bytes] = None  # OpenPGP public key (not available without jce)
 
 
 @dataclass
@@ -82,40 +62,35 @@ class DecryptionResult:
 
 class CryptoBackend:
     """
-    Cryptographic backend using johnnycanencrypt.
+    Cryptographic backend using Python's cryptography library.
     
     Handles all cryptographic operations for the virtual OpenPGP card.
-    Uses Johnny class for signing/decryption and create_key for key generation.
     """
     
-    # Default password for key operations (card PIN protects access)
+    # Default password (kept for API compatibility, not used in cryptography-only implementation)
     DEFAULT_PASSWORD = "virtual-openpgp-card"
     
     def __init__(self):
         """Initialize the crypto backend."""
-        if not CRYPTO_AVAILABLE:
-            logger.warning("johnnycanencrypt not available - crypto operations will fail")
-        # Store secret key PEM strings for each key type
-        self._secret_keys: dict[KeyType, Optional[str]] = {
-            KeyType.SIGNATURE: None,
-            KeyType.DECRYPTION: None,
-            KeyType.AUTHENTICATION: None,
-        }
-        # Store public key PEM strings
-        self._public_keys: dict[KeyType, Optional[str]] = {
-            KeyType.SIGNATURE: None,
-            KeyType.DECRYPTION: None,
-            KeyType.AUTHENTICATION: None,
-        }
-        # Store raw key material (32 bytes for Ed25519/X25519 from key import)
+        # Store raw key material (32 bytes for Ed25519/X25519)
         self._raw_private_keys: dict[KeyType, Optional[bytes]] = {
             KeyType.SIGNATURE: None,
             KeyType.DECRYPTION: None,
             KeyType.AUTHENTICATION: None,
         }
-        # Store DER-encoded keys (for RSA imported keys)
-        self._keys: dict[KeyType, bytes] = {}
-        # Store algorithm info for raw keys
+        # Store DER-encoded keys (for RSA keys)
+        self._der_keys: dict[KeyType, Optional[bytes]] = {
+            KeyType.SIGNATURE: None,
+            KeyType.DECRYPTION: None,
+            KeyType.AUTHENTICATION: None,
+        }
+        # Store public key data (TLV encoded for card format)
+        self._public_key_data: dict[KeyType, Optional[bytes]] = {
+            KeyType.SIGNATURE: None,
+            KeyType.DECRYPTION: None,
+            KeyType.AUTHENTICATION: None,
+        }
+        # Store algorithm info
         self._algorithm_info: dict[KeyType, Optional[AlgorithmAttributes]] = {
             KeyType.SIGNATURE: None,
             KeyType.DECRYPTION: None,
@@ -125,7 +100,11 @@ class CryptoBackend:
     @staticmethod
     def is_available() -> bool:
         """Check if crypto backend is available."""
-        return CRYPTO_AVAILABLE
+        try:
+            from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, x25519
+            return True
+        except ImportError:
+            return False
     
     def generate_rsa_key(
         self,
@@ -142,63 +121,59 @@ class CryptoBackend:
         Returns:
             GeneratedKey with public/private data and fingerprint, or None on error
         """
-        if not CRYPTO_AVAILABLE or Cipher is None:
-            logger.error("johnnycanencrypt not available")
-            return None
-        
         try:
+            from cryptography.hazmat.primitives.asymmetric import rsa
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.backends import default_backend
+            
             logger.info(f"Generating RSA-{bits} key for {key_type.name}")
             
             timestamp = int(time.time())
             
-            # Select cipher based on key size
-            if bits >= 4096:
-                cipher_type = Cipher.RSA4k
-            else:
-                cipher_type = Cipher.RSA2k
-            
-            # Always generate all subkeys for a complete OpenPGP key
-            # The card will use the appropriate subkey for each operation
-            # whichkeys: 1=signing, 2=encryption, 4=authentication, 7=all
-            whichkeys = 7
-            
-            # Generate key using johnnycanencrypt
-            # Returns: tuple[str, str, str] = (public_key_armor, secret_key_armor, fingerprint)
-            if jce_create_key is None:
-                logger.error("create_key function not available")
-                return None
-            
-            pub_key_pem, sec_key_pem, fingerprint_hex = jce_create_key(
-                self.DEFAULT_PASSWORD,      # password: str
-                ["virtual-card@openpgp.local"],  # userids: list[str]
-                cipher_type.value,          # cipher: str
-                timestamp,                  # creation: int (unix timestamp)
-                0,                          # expiration: int (0 = no expiration)
-                True,                       # subkeys_expiration: bool
-                whichkeys,                  # whichkeys: int
-                True,                       # can_primary_sign: bool
-                False                       # can_primary_expire: bool
+            # Generate RSA key
+            private_key = rsa.generate_private_key(
+                public_exponent=65537,
+                key_size=bits,
+                backend=default_backend()
             )
             
-            # Get public key bytes for OpenPGP card format
-            pub_data = self._encode_rsa_public_key_from_pem(pub_key_pem)
+            public_key = private_key.public_key()
+            public_numbers = public_key.public_numbers()
+            
+            # Encode public key in OpenPGP card format (7F49 template)
+            n_bytes = public_numbers.n.to_bytes((public_numbers.n.bit_length() + 7) // 8, 'big')
+            e_bytes = public_numbers.e.to_bytes((public_numbers.e.bit_length() + 7) // 8, 'big')
+            
+            from .tlv import TLVEncoder
+            content = TLVEncoder.encode(0x81, n_bytes) + TLVEncoder.encode(0x82, e_bytes)
+            pub_data = TLVEncoder.encode(0x7F49, content)
+            
+            # Serialize private key to DER format
+            priv_data = private_key.private_bytes(
+                encoding=serialization.Encoding.DER,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            )
+            
+            # Calculate fingerprint
+            fingerprint = self._calculate_rsa_fingerprint(n_bytes, e_bytes, timestamp)
             
             # Store keys
-            self._secret_keys[key_type] = sec_key_pem
-            self._public_keys[key_type] = pub_key_pem
+            self._der_keys[key_type] = priv_data
+            self._public_key_data[key_type] = pub_data
             
-            # Convert fingerprint from hex string to bytes
-            fingerprint_bytes = bytes.fromhex(fingerprint_hex)
-            
-            logger.info(f"Generated RSA key with fingerprint {fingerprint_hex}")
+            logger.info(f"Generated RSA-{bits} key with fingerprint {fingerprint.hex()}")
             
             return GeneratedKey(
                 public_key_data=pub_data,
-                private_key_data=sec_key_pem.encode('utf-8'),
-                fingerprint=fingerprint_bytes,
+                private_key_data=priv_data,
+                fingerprint=fingerprint,
                 generation_time=timestamp
             )
             
+        except ImportError as e:
+            logger.error(f"cryptography library not available: {e}")
+            return None
         except Exception as e:
             logger.exception(f"Failed to generate RSA key: {e}")
             return None
@@ -216,63 +191,176 @@ class CryptoBackend:
         Returns:
             GeneratedKey with public/private data and fingerprint, or None on error
         """
-        if not CRYPTO_AVAILABLE or Cipher is None:
-            logger.error("johnnycanencrypt not available")
-            return None
-        
         try:
+            from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
+            from cryptography.hazmat.primitives import serialization
+            
             logger.info(f"Generating Curve25519 key for {key_type.name}")
             
             timestamp = int(time.time())
             
-            # Cv25519 cipher creates Ed25519 for signing and X25519 for encryption
-            cipher_type = Cipher.Cv25519
+            # Generate key based on key type
+            if key_type == KeyType.DECRYPTION:
+                # X25519 for encryption/decryption
+                private_key = x25519.X25519PrivateKey.generate()
+                raw_private = private_key.private_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PrivateFormat.Raw,
+                    encryption_algorithm=serialization.NoEncryption()
+                )
+                raw_public = private_key.public_key().public_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PublicFormat.Raw
+                )
+            else:
+                # Ed25519 for signing and authentication
+                private_key = ed25519.Ed25519PrivateKey.generate()
+                raw_private = private_key.private_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PrivateFormat.Raw,
+                    encryption_algorithm=serialization.NoEncryption()
+                )
+                raw_public = private_key.public_key().public_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PublicFormat.Raw
+                )
             
-            # Always generate all subkeys for a complete OpenPGP key
-            # The card will use the appropriate subkey for each operation
-            # whichkeys: 1=signing, 2=encryption, 4=authentication, 7=all
-            whichkeys = 7
+            # Store raw key for operations
+            self._raw_private_keys[key_type] = raw_private
             
-            # Generate key using johnnycanencrypt
-            # Returns: tuple[str, str, str] = (public_key_armor, secret_key_armor, fingerprint)
-            if jce_create_key is None:
-                logger.error("create_key function not available")
-                return None
+            # Build OpenPGP public key structure (7F49 template with 86 tag for public key)
+            from .tlv import TLVEncoder
+            pub_data = TLVEncoder.encode(0x7F49, TLVEncoder.encode(0x86, raw_public))
+            self._public_key_data[key_type] = pub_data
             
-            pub_key_pem, sec_key_pem, fingerprint_hex = jce_create_key(
-                self.DEFAULT_PASSWORD,      # password: str
-                ["virtual-card@openpgp.local"],  # userids: list[str]
-                cipher_type.value,          # cipher: str
-                timestamp,                  # creation: int
-                0,                          # expiration: int (no expiration)
-                True,                       # subkeys_expiration: bool
-                whichkeys,                  # whichkeys: int
-                True,                       # can_primary_sign: bool
-                False                       # can_primary_expire: bool
-            )
+            # Calculate fingerprint
+            fingerprint = self._calculate_ecc_fingerprint(raw_public, timestamp, key_type)
             
-            # Get public key bytes for OpenPGP card format
-            pub_data = self._encode_ecc_public_key_from_pem(pub_key_pem, key_type)
-            
-            # Store keys
-            self._secret_keys[key_type] = sec_key_pem
-            self._public_keys[key_type] = pub_key_pem
-            
-            # Convert fingerprint from hex string to bytes
-            fingerprint_bytes = bytes.fromhex(fingerprint_hex)
-            
-            logger.info(f"Generated Curve25519 key with fingerprint {fingerprint_hex}")
+            logger.info(f"Generated Curve25519 key with fingerprint {fingerprint.hex()}")
             
             return GeneratedKey(
                 public_key_data=pub_data,
-                private_key_data=sec_key_pem.encode('utf-8'),
-                fingerprint=fingerprint_bytes,
-                generation_time=timestamp
+                private_key_data=raw_private,
+                fingerprint=fingerprint,
+                generation_time=timestamp,
+                raw_private_key=raw_private,
+                raw_public_key=raw_public
             )
             
+        except ImportError as e:
+            logger.error(f"cryptography library not available: {e}")
+            return None
         except Exception as e:
             logger.exception(f"Failed to generate Curve25519 key: {e}")
             return None
+    
+    def _calculate_rsa_fingerprint(self, n_bytes: bytes, e_bytes: bytes, timestamp: int) -> bytes:
+        """
+        Calculate OpenPGP v4 fingerprint for RSA key.
+        
+        The fingerprint is SHA-1 of:
+        - 0x99 (public key packet tag, old format)
+        - 2-byte packet length
+        - Version (0x04)
+        - 4-byte creation time
+        - Algorithm (0x01 for RSA)
+        - RSA n as MPI
+        - RSA e as MPI
+        """
+        # Build public key packet content
+        packet_content = bytes([
+            0x04,  # Version 4
+            (timestamp >> 24) & 0xFF,
+            (timestamp >> 16) & 0xFF,
+            (timestamp >> 8) & 0xFF,
+            timestamp & 0xFF,
+            0x01,  # RSA algorithm
+        ])
+        
+        # Add n as MPI (bit count + data)
+        n_bits = len(n_bytes) * 8
+        # Find actual bit count (exclude leading zeros)
+        for i, b in enumerate(n_bytes):
+            if b != 0:
+                n_bits = (len(n_bytes) - i) * 8 - (8 - b.bit_length())
+                break
+        packet_content += bytes([(n_bits >> 8) & 0xFF, n_bits & 0xFF])
+        packet_content += n_bytes
+        
+        # Add e as MPI
+        e_bits = len(e_bytes) * 8
+        for i, b in enumerate(e_bytes):
+            if b != 0:
+                e_bits = (len(e_bytes) - i) * 8 - (8 - b.bit_length())
+                break
+        packet_content += bytes([(e_bits >> 8) & 0xFF, e_bits & 0xFF])
+        packet_content += e_bytes
+        
+        # Build fingerprint input
+        packet_len = len(packet_content)
+        fingerprint_input = bytes([
+            0x99,  # Public key packet tag (old format)
+            (packet_len >> 8) & 0xFF,
+            packet_len & 0xFF,
+        ]) + packet_content
+        
+        return hashlib.sha1(fingerprint_input).digest()
+    
+    def _calculate_ecc_fingerprint(self, public_key: bytes, timestamp: int, key_type: KeyType) -> bytes:
+        """
+        Calculate a v4-style fingerprint for ECC keys.
+        
+        For Ed25519/X25519, the fingerprint is SHA-1 of:
+        - 0x99 (public key packet tag, old format)
+        - 2-byte packet length
+        - Version (0x04)
+        - 4-byte creation time
+        - Algorithm ID (22 for EdDSA/Ed25519, 18 for ECDH/X25519)
+        - Algorithm-specific data (OID + public key)
+        """
+        # Determine algorithm ID and OID
+        if key_type == KeyType.DECRYPTION:
+            algo_id = 18  # ECDH
+            # X25519 OID: 1.3.6.1.4.1.3029.1.5.1
+            oid = bytes([0x0A, 0x2B, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01])
+        else:
+            algo_id = 22  # EdDSA
+            # Ed25519 OID: 1.3.6.1.4.1.11591.15.1
+            oid = bytes([0x09, 0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01])
+        
+        # Build public key packet content
+        packet_content = bytes([
+            0x04,  # Version 4
+            (timestamp >> 24) & 0xFF,
+            (timestamp >> 16) & 0xFF,
+            (timestamp >> 8) & 0xFF,
+            timestamp & 0xFF,
+            algo_id,
+        ])
+        packet_content += oid
+        
+        # Add public key as MPI (with bit count prefix)
+        key_bits = len(public_key) * 8
+        packet_content += bytes([
+            (key_bits >> 8) & 0xFF,
+            key_bits & 0xFF,
+        ])
+        packet_content += public_key
+        
+        # For ECDH, add KDF parameters
+        if key_type == KeyType.DECRYPTION:
+            # KDF parameters: hash=SHA256, cipher=AES128
+            packet_content += bytes([0x03, 0x01, 0x08, 0x07])
+        
+        # Build fingerprint input
+        packet_len = len(packet_content)
+        fingerprint_input = bytes([
+            0x99,  # Public key packet tag (old format)
+            (packet_len >> 8) & 0xFF,
+            packet_len & 0xFF,
+        ]) + packet_content
+        
+        return hashlib.sha1(fingerprint_input).digest()
     
     def load_key(
         self,
@@ -281,265 +369,36 @@ class CryptoBackend:
         algorithm: AlgorithmAttributes
     ) -> bool:
         """
-        Load a key from stored private key data (PEM format).
+        Load a key from stored private key data.
         
         Args:
             key_type: The key slot type
-            private_key_data: The stored private key bytes (PEM encoded)
+            private_key_data: The stored private key bytes
             algorithm: Algorithm attributes for the key
             
         Returns:
             True if key was loaded successfully
         """
-        if not CRYPTO_AVAILABLE:
-            return False
-        
         if not private_key_data:
             return False
         
-        try:
-            # Decode PEM data and store it
-            sec_key_pem = private_key_data.decode('utf-8')
-            self._secret_keys[key_type] = sec_key_pem
-            
-            # Also extract and store public key (for verification)
-            if jce_parse_cert_bytes is not None:
-                _ = jce_parse_cert_bytes(private_key_data)
-            logger.info(f"Loaded key for {key_type.name}")
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to load key: {e}")
-            return False
-    
-    def sign(
-        self,
-        data: bytes,
-        key_type: KeyType = KeyType.SIGNATURE
-    ) -> SignatureResult:
-        """
-        Sign data using the specified key.
+        self._algorithm_info[key_type] = algorithm
         
-        Args:
-            data: The data to sign (typically a hash/digest)
-            key_type: The key slot to use
-            
-        Returns:
-            SignatureResult with signature bytes or error
-        """
-        if not CRYPTO_AVAILABLE or Johnny is None:
-            return SignatureResult(b'', False, "Crypto backend not available")
+        # Handle based on algorithm
+        if algorithm.algorithm_id == AlgorithmID.RSA_2048:
+            # RSA key - check if it's DER or raw CRT format
+            if len(private_key_data) > 500:
+                # Likely DER format
+                self._der_keys[key_type] = private_key_data
+            else:
+                # Raw CRT format
+                return self.load_raw_key(key_type, private_key_data, algorithm)
+        else:
+            # ECC key - raw format
+            return self.load_raw_key(key_type, private_key_data, algorithm)
         
-        sec_key_pem = self._secret_keys.get(key_type)
-        if sec_key_pem is None:
-            return SignatureResult(b'', False, "Key not loaded")
-        
-        try:
-            # Create Johnny instance with secret key
-            j = Johnny(sec_key_pem.encode('utf-8'))
-            
-            # Sign the data using detached signature
-            # sign_bytes_detached returns PGP armored signature (string)
-            signature_pem: str = j.sign_bytes_detached(data, self.DEFAULT_PASSWORD)
-            
-            # Return the signature (as bytes for card compatibility)
-            # The raw signature bytes are embedded in the PGP armor
-            # For now, return the armored format - caller can parse if needed
-            signature_bytes = signature_pem.encode('utf-8')
-            
-            logger.debug(f"Signed {len(data)} bytes of data")
-            return SignatureResult(signature_bytes, True)
-            
-        except Exception as e:
-            logger.exception(f"Signing failed: {e}")
-            return SignatureResult(b'', False, str(e))
-    
-    def decrypt(
-        self,
-        ciphertext: bytes,
-        key_type: KeyType = KeyType.DECRYPTION
-    ) -> DecryptionResult:
-        """
-        Decrypt data using the decryption key.
-        
-        Args:
-            ciphertext: The encrypted data (for RSA, this is PKCS#1 v1.5 padded ciphertext)
-            key_type: The key slot to use (usually DECRYPTION)
-            
-        Returns:
-            DecryptionResult with plaintext or error
-        """
-        # Check for RSA key first (stored in self._keys as DER)
-        rsa_key = self._keys.get(key_type)
-        if rsa_key is not None:
-            return self._decrypt_rsa(ciphertext, rsa_key)
-        
-        # Fall back to Johnny-based decryption for PEM keys
-        if not CRYPTO_AVAILABLE or Johnny is None:
-            return DecryptionResult(b'', False, "Crypto backend not available")
-        
-        sec_key_pem = self._secret_keys.get(key_type)
-        if sec_key_pem is None:
-            return DecryptionResult(b'', False, "Key not loaded")
-        
-        try:
-            # Create Johnny instance with secret key
-            j = Johnny(sec_key_pem.encode('utf-8'))
-            
-            # Decrypt the data
-            # decrypt_bytes expects PGP encrypted data and returns plaintext bytes
-            plaintext: bytes = j.decrypt_bytes(ciphertext, self.DEFAULT_PASSWORD)
-            
-            logger.debug(f"Decrypted {len(ciphertext)} bytes")
-            return DecryptionResult(plaintext, True)
-            
-        except Exception as e:
-            logger.exception(f"Decryption failed: {e}")
-            return DecryptionResult(b'', False, str(e))
-    
-    def _decrypt_rsa(self, ciphertext: bytes, der_key: bytes) -> DecryptionResult:
-        """
-        Decrypt using RSA key (PKCS#1 v1.5 padding).
-        
-        Args:
-            ciphertext: The ciphertext to decrypt
-            der_key: The DER-encoded private key
-            
-        Returns:
-            DecryptionResult with plaintext
-        """
-        try:
-            from cryptography.hazmat.primitives.asymmetric import padding
-            from cryptography.hazmat.primitives.serialization import load_der_private_key
-            from cryptography.hazmat.backends import default_backend
-            
-            # Load the private key from DER
-            private_key = load_der_private_key(der_key, password=None, backend=default_backend())
-            
-            # Decrypt with PKCS#1 v1.5 padding
-            plaintext = private_key.decrypt(
-                ciphertext,
-                padding.PKCS1v15()
-            )
-            
-            logger.debug(f"RSA decrypted {len(ciphertext)} bytes -> {len(plaintext)} bytes")
-            return DecryptionResult(plaintext, True)
-            
-        except Exception as e:
-            logger.exception(f"RSA decryption failed: {e}")
-            return DecryptionResult(b'', False, str(e))
-    
-    def authenticate(
-        self,
-        challenge: bytes
-    ) -> SignatureResult:
-        """
-        Perform internal authentication (sign a challenge).
-        
-        Args:
-            challenge: The challenge data to sign
-            
-        Returns:
-            SignatureResult with signature bytes
-        """
-        return self.sign(challenge, KeyType.AUTHENTICATION)
-    
-    def _encode_rsa_public_key_from_pem(self, pub_key_pem: str) -> bytes:
-        """
-        Extract RSA public key data from PEM and encode in OpenPGP card format.
-        
-        Format: Tag 7F49 containing:
-        - 81: Modulus (n)
-        - 82: Public exponent (e)
-        
-        For now, returns the raw PEM as placeholder - proper implementation
-        would parse the PGP public key packet.
-        """
-        # The PGP public key PEM contains the full certificate
-        # For card response, we need to extract the raw key material
-        # This is a simplified implementation
-        from .tlv import TLVEncoder
-        
-        # Return the PEM as-is encoded - the card layer can handle it
-        # A full implementation would parse the OpenPGP packet to extract n and e
-        return pub_key_pem.encode('utf-8')
-    
-    def _encode_ecc_public_key_from_pem(self, pub_key_pem: str, key_type: KeyType) -> bytes:
-        """
-        Extract ECC public key data from PEM and encode in OpenPGP card format.
-        
-        Format: Tag 7F49 containing:
-        - 86: Public key point (for ECDSA/EdDSA)
-        """
-        from .tlv import TLVEncoder
-        
-        # Return the PEM as-is encoded - the card layer can handle it
-        # A full implementation would parse the OpenPGP packet to extract the point
-        return pub_key_pem.encode('utf-8')
-    
-    def _calculate_fingerprint(self, public_key_data: bytes, timestamp: int) -> bytes:
-        """
-        Calculate OpenPGP v4 key fingerprint.
-        
-        The fingerprint is SHA-1 hash of:
-        - 0x99 (public key packet tag)
-        - 2-byte packet length
-        - Packet content (version, timestamp, algorithm, key material)
-        """
-        # For simplicity, we'll hash the public key data with timestamp
-        # A proper implementation would construct a full public key packet
-        
-        # Version 4 fingerprint
-        data = bytes([
-            0x99,  # Old format packet tag for public key
-        ])
-        
-        # Packet content
-        packet = bytes([
-            0x04,  # Version 4
-            (timestamp >> 24) & 0xFF,
-            (timestamp >> 16) & 0xFF,
-            (timestamp >> 8) & 0xFF,
-            timestamp & 0xFF,
-        ]) + public_key_data
-        
-        # Add length
-        pkt_len = len(packet)
-        data += bytes([(pkt_len >> 8) & 0xFF, pkt_len & 0xFF])
-        data += packet
-        
-        return hashlib.sha1(data).digest()
-    
-    def get_public_key(self, key_type: KeyType) -> Optional[bytes]:
-        """
-        Get the public key data for a key slot.
-        
-        Args:
-            key_type: The key slot
-            
-        Returns:
-            Public key bytes (PEM encoded), or None
-        """
-        pub_key_pem = self._public_keys.get(key_type)
-        if pub_key_pem is None:
-            return None
-        
-        return pub_key_pem.encode('utf-8')
-    
-    def has_key(self, key_type: KeyType) -> bool:
-        """Check if a key is loaded for the given slot."""
-        return (self._secret_keys.get(key_type) is not None or 
-                self._raw_private_keys.get(key_type) is not None or
-                self._keys.get(key_type) is not None)
-    
-    def has_raw_key(self, key_type: KeyType) -> bool:
-        """Check if a raw key is loaded for the given slot (Ed25519/X25519 or RSA)."""
-        # Check for Ed25519/X25519 raw keys
-        if self._raw_private_keys.get(key_type) is not None:
-            return True
-        # Also check for RSA keys stored in _keys (as DER format)
-        if self._keys.get(key_type) is not None:
-            return True
-        return False
+        logger.info(f"Loaded key for {key_type.name}")
+        return True
     
     def load_raw_key(
         self,
@@ -567,7 +426,6 @@ class CryptoBackend:
         
         # X25519 keys from OpenPGP are in big-endian (MPI format),
         # but the cryptography library expects little-endian.
-        # We need to reverse the byte order for X25519 keys.
         if algorithm.algorithm_id == AlgorithmID.ECDH_X25519 and len(raw_key) == 32:
             raw_key = bytes(reversed(raw_key))
             logger.debug(f"Reversed byte order for X25519 key")
@@ -586,31 +444,25 @@ class CryptoBackend:
         """
         Load RSA key from raw CRT format data.
         
-        The RSA key data from OpenPGP imports contains:
-        - Public exponent (e) - typically 3 bytes (010001 = 65537)
-        - CRT components: p, q concatenated
-        
         The format is: e (3 bytes) || p (key_size/16 bytes) || q (key_size/16 bytes)
-        For RSA-4096: e (3 bytes) + p (256 bytes) + q (256 bytes) = 515 bytes
-        For RSA-2048: e (3 bytes) + p (128 bytes) + q (128 bytes) = 259 bytes
         """
         try:
             from cryptography.hazmat.primitives.asymmetric.rsa import (
                 rsa_crt_iqmp, rsa_crt_dmp1, rsa_crt_dmq1,
                 RSAPrivateNumbers, RSAPublicNumbers
             )
+            from cryptography.hazmat.primitives import serialization
             from cryptography.hazmat.backends import default_backend
             
             # Determine key size from algorithm attributes
             key_bits = algorithm.param1  # e.g., 4096 or 2048
             component_size = key_bits // 16  # p and q are half the key size in bytes
             
-            # Parse the key data
-            # Format: e || p || q
-            e_size = 3  # Public exponent is typically 3 bytes (65537 = 010001)
+            # Parse the key data: e || p || q
+            e_size = 3
             
             if len(raw_key) < e_size + 2 * component_size:
-                logger.warning(f"RSA key data too short: {len(raw_key)} bytes, expected at least {e_size + 2 * component_size}")
+                logger.warning(f"RSA key data too short: {len(raw_key)} bytes")
                 return False
             
             e = int.from_bytes(raw_key[:e_size], 'big')
@@ -619,7 +471,7 @@ class CryptoBackend:
             
             # Calculate derived values
             n = p * q
-            d = pow(e, -1, (p - 1) * (q - 1))  # Private exponent
+            d = pow(e, -1, (p - 1) * (q - 1))
             dp = rsa_crt_dmp1(d, p)
             dq = rsa_crt_dmq1(d, q)
             qinv = rsa_crt_iqmp(p, q)
@@ -629,20 +481,52 @@ class CryptoBackend:
             private_numbers = RSAPrivateNumbers(p, q, d, dp, dq, qinv, public_numbers)
             private_key = private_numbers.private_key(default_backend())
             
-            # Store as DER-encoded private key for later use
-            from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
-            der_key = private_key.private_bytes(Encoding.DER, PrivateFormat.PKCS8, NoEncryption())
+            # Store as DER-encoded private key
+            der_key = private_key.private_bytes(
+                serialization.Encoding.DER,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption()
+            )
             
-            # Store in the keys dict for RSA operations
-            self._keys[key_type] = der_key
+            self._der_keys[key_type] = der_key
             self._algorithm_info[key_type] = algorithm
             
-            logger.info(f"Loaded RSA-{key_bits} key for {key_type.name}, {len(raw_key)} bytes -> DER {len(der_key)} bytes")
+            logger.info(f"Loaded RSA-{key_bits} key for {key_type.name}")
             return True
             
         except Exception as e:
             logger.exception(f"Failed to load RSA key: {e}")
             return False
+    
+    def sign(
+        self,
+        data: bytes,
+        key_type: KeyType = KeyType.SIGNATURE
+    ) -> SignatureResult:
+        """
+        Sign data using the specified key.
+        
+        For Ed25519: Signs the data directly
+        For RSA: Expects DigestInfo and performs PKCS#1 v1.5 signature
+        
+        Args:
+            data: The data to sign
+            key_type: The key slot to use
+            
+        Returns:
+            SignatureResult with signature bytes or error
+        """
+        # Try RSA first
+        der_key = self._der_keys.get(key_type)
+        if der_key is not None:
+            return self._sign_rsa(data, der_key)
+        
+        # Try Ed25519
+        raw_key = self._raw_private_keys.get(key_type)
+        if raw_key is not None:
+            return self._sign_ed25519(data, raw_key)
+        
+        return SignatureResult(b'', False, "Key not loaded")
     
     def sign_raw(
         self,
@@ -650,52 +534,30 @@ class CryptoBackend:
         key_type: KeyType = KeyType.SIGNATURE
     ) -> SignatureResult:
         """
-        Sign using raw key (Ed25519 or RSA).
-        
-        Args:
-            data: The data to sign (for RSA, this should be DigestInfo)
-            key_type: The key slot to use
-            
-        Returns:
-            SignatureResult with signature bytes
+        Sign using raw key (same as sign, kept for API compatibility).
         """
-        # Check for RSA key first (stored in self._keys as DER)
-        rsa_key = self._keys.get(key_type)
-        if rsa_key is not None:
-            return self._sign_rsa(data, rsa_key)
-        
-        # Then check for Ed25519 raw key
-        raw_key = self._raw_private_keys.get(key_type)
-        if raw_key is None:
-            return SignatureResult(b'', False, "No raw key loaded")
-        
+        return self.sign(data, key_type)
+    
+    def _sign_ed25519(self, data: bytes, raw_key: bytes) -> SignatureResult:
+        """Sign data using Ed25519."""
         try:
             from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
             
-            # Create Ed25519 private key from raw 32 bytes
             private_key = Ed25519PrivateKey.from_private_bytes(raw_key)
             signature = private_key.sign(data)
             
-            logger.debug(f"Raw Ed25519 signature: {len(signature)} bytes")
+            logger.debug(f"Ed25519 signature: {len(signature)} bytes")
             return SignatureResult(signature, True)
             
         except Exception as e:
-            logger.exception(f"Raw signing failed: {e}")
+            logger.exception(f"Ed25519 signing failed: {e}")
             return SignatureResult(b'', False, str(e))
     
     def _sign_rsa(self, data: bytes, der_key: bytes) -> SignatureResult:
         """
         Sign using RSA key (PKCS#1 v1.5 padding).
         
-        For OpenPGP cards, we receive DigestInfo and apply raw PKCS#1 v1.5 padding,
-        then perform raw RSA decryption (signing = decryption with private key).
-        
-        Args:
-            data: The DigestInfo to sign (algorithm OID + hash value)
-            der_key: DER-encoded RSA private key
-            
-        Returns:
-            SignatureResult with signature bytes
+        For OpenPGP cards, we receive DigestInfo and apply raw PKCS#1 v1.5 padding.
         """
         try:
             from cryptography.hazmat.primitives.serialization import load_der_private_key
@@ -708,34 +570,71 @@ class CryptoBackend:
             
             # Build PKCS#1 v1.5 padding manually:
             # 0x00 || 0x01 || padding_bytes(0xFF) || 0x00 || DigestInfo
-            # Padding length = key_size - 3 - len(data)
-            
             padding_length = key_size - 3 - len(data)
             if padding_length < 8:
-                return SignatureResult(b'', False, f"DigestInfo too long for key size: {len(data)} + 3 > {key_size}")
+                return SignatureResult(b'', False, f"DigestInfo too long for key size")
             
-            # Build the padded message
             padded = b'\x00\x01' + (b'\xff' * padding_length) + b'\x00' + data
             
-            # Convert to integer and do raw RSA decryption (signing)
+            # Convert to integer and do raw RSA operation
             padded_int = int.from_bytes(padded, 'big')
-            
-            # Get the RSA private numbers for raw operation
             private_numbers = private_key.private_numbers()  # type: ignore[union-attr]
             
             # RSA signature: m^d mod n
             signature_int = pow(padded_int, private_numbers.d, private_numbers.public_numbers.n)
-            
-            # Convert back to bytes
             signature = signature_int.to_bytes(key_size, 'big')
             
-            logger.debug(f"RSA signature: {len(signature)} bytes (key_size={key_size}, digest_info={len(data)} bytes)")
+            logger.debug(f"RSA signature: {len(signature)} bytes")
             return SignatureResult(signature, True)
             
         except Exception as e:
             logger.exception(f"RSA signing failed: {e}")
             return SignatureResult(b'', False, str(e))
-            return SignatureResult(b'', False, str(e))
+    
+    def decrypt(
+        self,
+        ciphertext: bytes,
+        key_type: KeyType = KeyType.DECRYPTION
+    ) -> DecryptionResult:
+        """
+        Decrypt data using the decryption key.
+        
+        For RSA: PKCS#1 v1.5 decryption
+        For X25519: Use decrypt_ecdh instead
+        
+        Args:
+            ciphertext: The encrypted data
+            key_type: The key slot to use
+            
+        Returns:
+            DecryptionResult with plaintext or error
+        """
+        der_key = self._der_keys.get(key_type)
+        if der_key is not None:
+            return self._decrypt_rsa(ciphertext, der_key)
+        
+        return DecryptionResult(b'', False, "Key not loaded")
+    
+    def _decrypt_rsa(self, ciphertext: bytes, der_key: bytes) -> DecryptionResult:
+        """Decrypt using RSA key (PKCS#1 v1.5 padding)."""
+        try:
+            from cryptography.hazmat.primitives.asymmetric import padding
+            from cryptography.hazmat.primitives.serialization import load_der_private_key
+            from cryptography.hazmat.backends import default_backend
+            
+            private_key = load_der_private_key(der_key, password=None, backend=default_backend())
+            
+            plaintext = private_key.decrypt(  # type: ignore[union-attr]
+                ciphertext,
+                padding.PKCS1v15()
+            )
+            
+            logger.debug(f"RSA decrypted {len(ciphertext)} bytes -> {len(plaintext)} bytes")
+            return DecryptionResult(plaintext, True)
+            
+        except Exception as e:
+            logger.exception(f"RSA decryption failed: {e}")
+            return DecryptionResult(b'', False, str(e))
     
     def decrypt_ecdh(
         self,
@@ -746,7 +645,7 @@ class CryptoBackend:
         Perform X25519 ECDH to derive shared secret.
         
         Args:
-            ephemeral_public: The ephemeral public key from the encrypted message (32 bytes)
+            ephemeral_public: The ephemeral public key (32 bytes)
             key_type: The key slot to use
             
         Returns:
@@ -754,18 +653,13 @@ class CryptoBackend:
         """
         raw_key = self._raw_private_keys.get(key_type)
         if raw_key is None:
-            return DecryptionResult(b'', False, "No raw key loaded")
+            return DecryptionResult(b'', False, "Key not loaded")
         
         try:
             from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
             
-            # Create X25519 private key from raw 32 bytes
             private_key = X25519PrivateKey.from_private_bytes(raw_key)
-            
-            # Create peer's public key
             peer_public = X25519PublicKey.from_public_bytes(ephemeral_public)
-            
-            # Perform ECDH key exchange
             shared_secret = private_key.exchange(peer_public)
             
             logger.debug(f"ECDH shared secret: {len(shared_secret)} bytes")
@@ -774,282 +668,34 @@ class CryptoBackend:
         except Exception as e:
             logger.exception(f"ECDH decryption failed: {e}")
             return DecryptionResult(b'', False, str(e))
-
-
-class SimpleCryptoBackend:
-    """
-    Simplified crypto backend that doesn't require johnnycanencrypt.
     
-    Uses Python's built-in cryptography for basic operations.
-    This is a fallback when johnnycanencrypt is not available.
-    """
-    
-    def __init__(self):
-        """Initialize simple crypto backend."""
-        self._keys: dict[KeyType, bytes] = {}
-        logger.info("Using SimpleCryptoBackend (limited functionality)")
-    
-    @staticmethod
-    def is_available() -> bool:
-        """Always available as fallback."""
-        return True
-    
-    def generate_rsa_key(
+    def authenticate(
         self,
-        key_type: KeyType,
-        bits: int = 2048
-    ) -> Optional[GeneratedKey]:
-        """Generate a placeholder RSA key."""
-        try:
-            from cryptography.hazmat.primitives.asymmetric import rsa  # type: ignore[import-not-found]
-            from cryptography.hazmat.primitives import serialization  # type: ignore[import-not-found]
-            from cryptography.hazmat.backends import default_backend  # type: ignore[import-not-found]
-            
-            timestamp = int(time.time())
-            
-            # Generate RSA key
-            private_key = rsa.generate_private_key(
-                public_exponent=65537,
-                key_size=bits,
-                backend=default_backend()
-            )
-            
-            public_key = private_key.public_key()
-            public_numbers = public_key.public_numbers()
-            
-            # Encode public key
-            n_bytes = public_numbers.n.to_bytes((public_numbers.n.bit_length() + 7) // 8, 'big')
-            e_bytes = public_numbers.e.to_bytes((public_numbers.e.bit_length() + 7) // 8, 'big')
-            
-            from .tlv import TLVEncoder
-            content = TLVEncoder.encode(0x81, n_bytes) + TLVEncoder.encode(0x82, e_bytes)
-            pub_data = TLVEncoder.encode(0x7F49, content)
-            
-            # Serialize private key
-            priv_data = private_key.private_bytes(
-                encoding=serialization.Encoding.DER,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption()
-            )
-            
-            # Calculate fingerprint
-            fingerprint = self._calculate_fingerprint(pub_data, timestamp)
-            
-            # Store key
-            self._keys[key_type] = priv_data
-            
-            return GeneratedKey(
-                public_key_data=pub_data,
-                private_key_data=priv_data,
-                fingerprint=fingerprint,
-                generation_time=timestamp
-            )
-            
-        except ImportError:
-            logger.error("cryptography library not available")
-            return None
-        except Exception as e:
-            logger.exception(f"Failed to generate RSA key: {e}")
-            return None
-    
-    def generate_curve25519_key(self, key_type: KeyType) -> Optional[GeneratedKey]:
-        """Generate a placeholder Curve25519 key."""
-        try:
-            from cryptography.hazmat.primitives.asymmetric import ed25519, x25519  # type: ignore[import-not-found]
-            from cryptography.hazmat.primitives import serialization  # type: ignore[import-not-found]
-            
-            timestamp = int(time.time())
-            
-            if key_type in (KeyType.SIGNATURE, KeyType.AUTHENTICATION):
-                private_key = ed25519.Ed25519PrivateKey.generate()
-                pub_bytes = private_key.public_key().public_bytes(
-                    encoding=serialization.Encoding.Raw,
-                    format=serialization.PublicFormat.Raw
-                )
-            else:
-                private_key = x25519.X25519PrivateKey.generate()
-                pub_bytes = private_key.public_key().public_bytes(
-                    encoding=serialization.Encoding.Raw,
-                    format=serialization.PublicFormat.Raw
-                )
-            
-            from .tlv import TLVEncoder
-            pub_data = TLVEncoder.encode(0x7F49, TLVEncoder.encode(0x86, pub_bytes))
-            
-            priv_data = private_key.private_bytes(
-                encoding=serialization.Encoding.Raw,
-                format=serialization.PrivateFormat.Raw,
-                encryption_algorithm=serialization.NoEncryption()
-            )
-            
-            fingerprint = self._calculate_fingerprint(pub_data, timestamp)
-            self._keys[key_type] = priv_data
-            
-            return GeneratedKey(
-                public_key_data=pub_data,
-                private_key_data=priv_data,
-                fingerprint=fingerprint,
-                generation_time=timestamp
-            )
-            
-        except ImportError:
-            logger.error("cryptography library not available")
-            return None
-        except Exception as e:
-            logger.exception(f"Failed to generate Curve25519 key: {e}")
-            return None
-    
-    def load_key(self, key_type: KeyType, private_key_data: bytes, algorithm: AlgorithmAttributes) -> bool:
-        """Load a key from stored data."""
-        if private_key_data:
-            self._keys[key_type] = private_key_data
-            return True
-        return False
-    
-    def sign(self, data: bytes, key_type: KeyType = KeyType.SIGNATURE) -> SignatureResult:
-        """Sign data."""
-        priv_data = self._keys.get(key_type)
-        if not priv_data:
-            return SignatureResult(b'', False, "Key not loaded")
-        
-        try:
-            from cryptography.hazmat.primitives import hashes  # type: ignore[import-not-found]
-            from cryptography.hazmat.primitives.asymmetric import padding, rsa, ed25519  # type: ignore[import-not-found]
-            from cryptography.hazmat.primitives.serialization import load_der_private_key  # type: ignore[import-not-found]
-            from cryptography.hazmat.backends import default_backend  # type: ignore[import-not-found]
-            
-            # Try loading as RSA key
-            try:
-                private_key = load_der_private_key(priv_data, password=None, backend=default_backend())
-                if isinstance(private_key, rsa.RSAPrivateKey):
-                    signature = private_key.sign(
-                        data,
-                        padding.PKCS1v15(),
-                        hashes.SHA256()
-                    )
-                    return SignatureResult(signature, True)
-            except Exception:
-                pass
-            
-            # Try loading as Ed25519 key
-            try:
-                private_key = ed25519.Ed25519PrivateKey.from_private_bytes(priv_data)
-                signature = private_key.sign(data)
-                return SignatureResult(signature, True)
-            except Exception:
-                pass
-            
-            return SignatureResult(b'', False, "Unsupported key type")
-            
-        except Exception as e:
-            return SignatureResult(b'', False, str(e))
-    
-    def decrypt(self, ciphertext: bytes, key_type: KeyType = KeyType.DECRYPTION) -> DecryptionResult:
-        """Decrypt data."""
-        priv_data = self._keys.get(key_type)
-        if not priv_data:
-            return DecryptionResult(b'', False, "Key not loaded")
-        
-        try:
-            from cryptography.hazmat.primitives.asymmetric import padding  # type: ignore[import-not-found]
-            from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey  # type: ignore[import-not-found]
-            from cryptography.hazmat.primitives.serialization import load_der_private_key  # type: ignore[import-not-found]
-            from cryptography.hazmat.backends import default_backend  # type: ignore[import-not-found]
-            
-            private_key = load_der_private_key(priv_data, password=None, backend=default_backend())
-            if not isinstance(private_key, RSAPrivateKey):
-                return DecryptionResult(b'', False, "Key is not an RSA private key")
-            plaintext = private_key.decrypt(
-                ciphertext,
-                padding.PKCS1v15()
-            )
-            return DecryptionResult(plaintext, True)
-            
-        except Exception as e:
-            return DecryptionResult(b'', False, str(e))
-    
-    def authenticate(self, challenge: bytes) -> SignatureResult:
-        """Authenticate by signing challenge."""
+        challenge: bytes
+    ) -> SignatureResult:
+        """
+        Perform internal authentication (sign a challenge).
+        """
         return self.sign(challenge, KeyType.AUTHENTICATION)
     
-    def _calculate_fingerprint(self, public_key_data: bytes, timestamp: int) -> bytes:
-        """Calculate key fingerprint."""
-        data = bytes([0x99])
-        packet = bytes([
-            0x04,
-            (timestamp >> 24) & 0xFF,
-            (timestamp >> 16) & 0xFF,
-            (timestamp >> 8) & 0xFF,
-            timestamp & 0xFF,
-        ]) + public_key_data
-        pkt_len = len(packet)
-        data += bytes([(pkt_len >> 8) & 0xFF, pkt_len & 0xFF])
-        data += packet
-        return hashlib.sha1(data).digest()
-    
     def get_public_key(self, key_type: KeyType) -> Optional[bytes]:
-        """Get public key data."""
-        # Would need to re-derive from private key
-        return None
+        """Get the public key data for a key slot (TLV encoded)."""
+        return self._public_key_data.get(key_type)
     
     def has_key(self, key_type: KeyType) -> bool:
-        """Check if key is loaded."""
-        return key_type in self._keys
+        """Check if a key is loaded for the given slot."""
+        return (self._raw_private_keys.get(key_type) is not None or 
+                self._der_keys.get(key_type) is not None)
     
     def has_raw_key(self, key_type: KeyType) -> bool:
-        """Check if a raw key is loaded."""
-        return key_type in self._keys
-    
-    def load_raw_key(
-        self,
-        key_type: KeyType,
-        raw_key: bytes,
-        algorithm: AlgorithmAttributes
-    ) -> bool:
-        """Load raw key material."""
-        if raw_key:
-            self._keys[key_type] = raw_key
-            return True
-        return False
-    
-    def sign_raw(
-        self,
-        data: bytes,
-        key_type: KeyType = KeyType.SIGNATURE
-    ) -> SignatureResult:
-        """Sign using raw Ed25519 key."""
-        return self.sign(data, key_type)
-    
-    def decrypt_ecdh(
-        self,
-        ephemeral_public: bytes,
-        key_type: KeyType = KeyType.DECRYPTION
-    ) -> DecryptionResult:
-        """Perform X25519 ECDH."""
-        raw_key = self._keys.get(key_type)
-        if not raw_key:
-            return DecryptionResult(b'', False, "Key not loaded")
-        
-        try:
-            from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-            
-            private_key = X25519PrivateKey.from_private_bytes(raw_key)
-            peer_public = X25519PublicKey.from_public_bytes(ephemeral_public)
-            shared_secret = private_key.exchange(peer_public)
-            return DecryptionResult(shared_secret, True)
-            
-        except Exception as e:
-            return DecryptionResult(b'', False, str(e))
+        """Check if a raw key is loaded for the given slot."""
+        return self.has_key(key_type)
 
 
-def get_crypto_backend() -> Union[CryptoBackend, SimpleCryptoBackend]:
-    """
-    Get the best available crypto backend.
-    
-    Returns CryptoBackend if johnnycanencrypt is available,
-    otherwise returns SimpleCryptoBackend.
-    """
-    if CRYPTO_AVAILABLE:
-        return CryptoBackend()
-    else:
-        return SimpleCryptoBackend()
+# Alias for compatibility
+SimpleCryptoBackend = CryptoBackend
+
+
+def get_crypto_backend() -> CryptoBackend:
+    """Get the crypto backend instance."""
+    return CryptoBackend()

@@ -40,9 +40,10 @@ restart-tcp: && restart-pcscd
 # Restart pcscd in debug mode
 restart-pcscd:
     #!/usr/bin/env bash
-    sudo pkill pcscd 2>/dev/null || true
+    sudo pkill -9 pcscd 2>/dev/null || true
     sleep 1
-    sudo /usr/sbin/pcscd --foreground --debug --apdu 2>&1 | tee /tmp/pcscd_debug.log &
+    # Start pcscd and redirect all output to log file (no STDOUT)
+    sudo /usr/sbin/pcscd --foreground --debug --apdu > /tmp/pcscd_debug.log 2>&1 &
     sleep 2
     echo "pcscd started in debug mode, logging to /tmp/pcscd_debug.log"
 

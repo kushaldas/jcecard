@@ -167,6 +167,81 @@ class TestKeyGeneration:
         assert len(result.public_key_data) > 0
         assert len(result.private_key_data) > 0
 
+    def test_generate_curve25519_examine_key_structure(self):
+        """
+        Test generating Curve25519 key and examine its structure.
+        
+        This test:
+        1. Generates a Cv25519 key
+        2. Examines the private_key_data (now 32-byte raw key)
+        3. Verifies raw_private_key and raw_public_key are set
+        4. Verifies the public key data is TLV-encoded
+        """
+        backend = CryptoBackend()
+        
+        # Generate key for decryption (X25519)
+        result = backend.generate_curve25519_key(KeyType.DECRYPTION)
+        
+        assert result is not None
+        assert isinstance(result, GeneratedKey)
+        
+        # Examine the data
+        print(f"\n=== Generated X25519 Key Analysis ===")
+        print(f"Fingerprint: {result.fingerprint.hex().upper()}")
+        print(f"Generation time: {result.generation_time}")
+        print(f"Public key data length: {len(result.public_key_data)} bytes")
+        print(f"Private key data length: {len(result.private_key_data)} bytes")
+        
+        # The private_key_data should now be 32-byte raw key
+        assert len(result.private_key_data) == 32, "Private key should be 32 bytes (raw X25519)"
+        print(f"\nPrivate key is 32-byte raw X25519 key")
+        print(f"Private key (hex): {result.private_key_data.hex()}")
+        
+        # Check raw_private_key field
+        assert result.raw_private_key is not None
+        assert len(result.raw_private_key) == 32
+        assert result.raw_private_key == result.private_key_data
+        print(f"\nraw_private_key matches private_key_data")
+        
+        # Check raw_public_key field
+        assert result.raw_public_key is not None
+        assert len(result.raw_public_key) == 32
+        print(f"Raw public key (hex): {result.raw_public_key.hex()}")
+        
+        # Verify public_key_data is TLV encoded (7F49 template with 86 tag)
+        pub_data = result.public_key_data
+        print(f"\n=== Public Key Data (Card Format) ===")
+        print(f"Hex: {pub_data.hex()}")
+        
+        # Should be: 7F49 <len> 86 <len> <32-byte-key>
+        # 7F49 is a 2-byte tag
+        assert pub_data[0] == 0x7F and pub_data[1] == 0x49, "Should start with 7F49 tag"
+        print(f"Tag: 7F49 (Public Key DO) ✓")
+        
+        # Verify the fingerprint is 20 bytes (v4 style)
+        assert len(result.fingerprint) == 20
+        print(f"\nFingerprint is 20 bytes (v4 format) ✓")
+        
+        # Test Ed25519 key generation (for signing)
+        print(f"\n=== Testing Ed25519 Key Generation ===")
+        result_sig = backend.generate_curve25519_key(KeyType.SIGNATURE)
+        assert result_sig is not None
+        assert len(result_sig.private_key_data) == 32, "Ed25519 private key should be 32 bytes"
+        assert len(result_sig.raw_public_key) == 32, "Ed25519 public key should be 32 bytes"
+        print(f"Ed25519 key generated successfully")
+        print(f"Fingerprint: {result_sig.fingerprint.hex().upper()}")
+        
+        # Test openpgp_public_key field (Phase 3)
+        print(f"\n=== Testing OpenPGP Public Key (Phase 3) ===")
+        if result.openpgp_public_key is not None:
+            print(f"OpenPGP public key length: {len(result.openpgp_public_key)} bytes")
+            pub_key_str = result.openpgp_public_key.decode('utf-8') if isinstance(result.openpgp_public_key, bytes) else result.openpgp_public_key
+            assert "-----BEGIN PGP PUBLIC KEY BLOCK-----" in pub_key_str, "Should be armored PEM format"
+            assert "-----END PGP PUBLIC KEY BLOCK-----" in pub_key_str
+            print("OpenPGP public key is valid PEM format ✓")
+            print(f"First 100 chars: {pub_key_str[:100]}...")
+        else:
+            print("OpenPGP public key not available (johnnycanencrypt may not be installed)")
 
 
 class TestSigning:

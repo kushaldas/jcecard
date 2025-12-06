@@ -222,23 +222,32 @@ def create_simple_atr() -> bytes:
 # Default ATR for the virtual OpenPGP card
 # This ATR indicates both T=0 and T=1 protocol support for maximum compatibility
 # Structure: TS T0 TD1 TD2 [historical bytes] TCK
-# - T0 = 0x88: TD1 present (0x80), 8 historical bytes (0x08)
-# - TD1 = 0x80: T=0 protocol, more interface bytes follow (TD2 present)
-# - TD2 = 0x01: T=1 protocol, no more interface bytes
+# 
+# Historical bytes match Yubikey format from 5F52 DO: 00 73 00 00 E0 05 90 00
+# - 0x00: Category indicator\n# - 0x73: Card service data
+# - 0x00 0x00: Card capabilities
+# - 0xE0: Status indicator (lifecycle present)
+# - 0x05: Life cycle = operational, TERMINATE DF allowed
+# - 0x90 0x00: Status word
+#
+# T0 = 0x88: TD1 present (0x80), 8 historical bytes (0x08)
+# TD1 = 0x80: T=0 protocol, TD2 present
+# TD2 = 0x01: T=1 protocol
 DEFAULT_ATR = bytes([
     0x3B,  # TS: Direct convention
     0x88,  # T0: TD1 present (0x80), 8 historical bytes (0x08)
     0x80,  # TD1: T=0 protocol, TD2 will follow
     0x01,  # TD2: T=1 protocol, no more interface bytes
-    0x68,  # Historical byte: 'h'
-    0x65,  # Historical byte: 'e'
-    0x6C,  # Historical byte: 'l'
-    0x6C,  # Historical byte: 'l'
-    0x6F,  # Historical byte: 'o'
-    0x47,  # Historical byte: 'G'
-    0x50,  # Historical byte: 'P'
-    0x47,  # Historical byte: 'G'
-    0x3B,  # TCK: Checksum (XOR of all bytes from T0)
+    # Historical bytes (Yubikey format):
+    0x00,  # Category indicator
+    0x73,  # Card service data
+    0x00,  # Card capabilities byte 1
+    0x00,  # Card capabilities byte 2
+    0xE0,  # Status indicator (lifecycle present)
+    0x05,  # Life cycle: operational, TERMINATE allowed
+    0x90,  # Status word high byte
+    0x00,  # Status word low byte
+    0x0F,  # TCK: Checksum (XOR of all bytes from T0)
 ])
 
 

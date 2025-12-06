@@ -424,6 +424,17 @@ class OpenPGPCard:
         elif tag == 0x5F50:  # URL
             return APDUResponse.success(state.cardholder.url.encode('utf-8'))
         
+        elif tag == 0x5F52:  # Historical bytes (application data object)
+            # Yubikey returns: 00 73 00 00 E0 05 90 00
+            # This is used by GPG to determine lifecycle status
+            return APDUResponse.success(state.get_historical_bytes())
+        
+        elif tag == 0x7F74:  # General Feature Management
+            # Return raw data without additional wrapping
+            # Yubikey returns: 81 01 20 90 00 (tag 81, len 1, value 0x20)
+            data = state.get_general_feature_management()
+            return APDUResponse.success(data)
+        
         else:
             logger.warning(f"Unknown GET DATA tag: {tag:04X}")
             return APDUResponse.error(SW.REFERENCED_DATA_NOT_FOUND)

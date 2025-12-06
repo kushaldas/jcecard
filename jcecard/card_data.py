@@ -394,16 +394,53 @@ class CardState:
         ])
     
     def get_historical_bytes(self) -> bytes:
-        """Get the historical bytes for ATR."""
-        # Category indicator || card service data || card capabilities
+        """
+        Get the historical bytes for ATR and 5F52 DO.
+        
+        Yubikey returns: 00 73 00 00 E0 05 90 00
+        - 0x00: Category indicator
+        - 0x73: Card service data (supports SELECT by full DF name)
+        - 0x00: Card capabilities byte 1
+        - 0x00: Card capabilities byte 2
+        - 0xE0: Status indicator present + data following
+        - 0x05: Life cycle status (operational, TERMINATE allowed)
+        - 0x90 0x00: Status word (success)
+        
+        The life cycle status 0x05 indicates:
+        - Card is in operational state
+        - TERMINATE DF command is supported
+        """
+        # Match Yubikey format exactly
+        lifecycle_status = 0x07 if self.terminated else 0x05
+        
         return bytes([
-            0x00,  # Category indicator (status indicator may be present)
+            0x00,  # Category indicator
             0x73,  # Card service data
-            0x00, 0x00,  # Card capabilities
-            0x80,  # Status indicator: normal
-            0x05,  # Length of following data
-            0x90, 0x00  # SW: success
+            0x00,  # Card capabilities byte 1
+            0x00,  # Card capabilities byte 2
+            0xE0,  # Status indicator (life cycle present + status)
+            lifecycle_status,  # Life cycle: 0x05 = operational, 0x07 = terminated
+            0x90, 0x00  # Status word
         ])
+    
+    def get_general_feature_management(self) -> bytes:
+        """
+        Get the General Feature Management DO (7F74).
+        
+        This DO indicates which optional features the card supports.
+        GPG uses this to determine if factory-reset is available.
+        
+        Yubikey returns: 81 01 20
+        - Tag 81 (Button/Feature byte)
+        - Length 01
+        - Value 0x20 (bit 5 set = TERMINATE DF command supported)
+        
+        The 0x20 value indicates:
+        - Bit 5 (0x20): Card supports TERMINATE DF command (factory reset)
+        """
+        # Yubikey format: 81 01 20
+        # Tag 81 = Button/feature byte, value 0x20 = TERMINATE DF supported
+        return bytes([0x81, 0x01, 0x20])
     
     def get_extended_capabilities(self) -> bytes:
         """Get the Extended Capabilities DO (C0)."""
