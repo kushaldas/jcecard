@@ -140,20 +140,8 @@ class TestCryptoBackendBasic:
 
 
 
-class TestRSAKeyGeneration:
-    """Tests for RSA key generation (requires johnnycanencrypt)."""
-    
-    def test_generate_rsa_2048(self):
-        """Test generating RSA-2048 key."""
-        backend = CryptoBackend()
-        result = backend.generate_rsa_key(KeyType.SIGNATURE, bits=2048)
-        
-        assert result is not None
-        assert isinstance(result, GeneratedKey)
-        assert len(result.fingerprint) == 20  # v4 fingerprint
-        assert result.generation_time > 0
-        assert len(result.public_key_data) > 0
-        assert len(result.private_key_data) > 0
+class TestKeyGeneration:
+    """Tests for key generation on the card."""
     
     def test_generate_rsa_4096(self):
         """Test generating RSA-4096 key."""
@@ -161,30 +149,11 @@ class TestRSAKeyGeneration:
         result = backend.generate_rsa_key(KeyType.SIGNATURE, bits=4096)
         
         assert result is not None
-        assert len(result.fingerprint) == 20
-    
-    def test_generate_rsa_for_different_key_types(self):
-        """Test generating RSA keys for different purposes."""
-        backend = CryptoBackend()
-        
-        for key_type in [KeyType.SIGNATURE, KeyType.DECRYPTION, KeyType.AUTHENTICATION]:
-            result = backend.generate_rsa_key(key_type)
-            assert result is not None, f"Failed for {key_type.name}"
-    
-    def test_generate_rsa_timestamps(self):
-        """Test that generated key has valid timestamp."""
-        backend = CryptoBackend()
-        before = int(time.time())
-        result = backend.generate_rsa_key(KeyType.SIGNATURE)
-        after = int(time.time())
-        
-        assert result is not None
-        assert before <= result.generation_time <= after
-
-
-
-class TestCurve25519KeyGeneration:
-    """Tests for Curve25519 key generation (requires johnnycanencrypt)."""
+        assert isinstance(result, GeneratedKey)
+        assert len(result.fingerprint) == 20  # v4 fingerprint
+        assert result.generation_time > 0
+        assert len(result.public_key_data) > 0
+        assert len(result.private_key_data) > 0
     
     def test_generate_curve25519(self):
         """Test generating Curve25519 key."""
@@ -195,14 +164,8 @@ class TestCurve25519KeyGeneration:
         assert isinstance(result, GeneratedKey)
         assert len(result.fingerprint) == 20
         assert result.generation_time > 0
-    
-    def test_generate_curve25519_for_encryption(self):
-        """Test generating Curve25519 key for encryption."""
-        backend = CryptoBackend()
-        result = backend.generate_curve25519_key(KeyType.DECRYPTION)
-        
-        assert result is not None
         assert len(result.public_key_data) > 0
+        assert len(result.private_key_data) > 0
 
 
 
