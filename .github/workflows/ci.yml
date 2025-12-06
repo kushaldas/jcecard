@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          pcscd \
+          libpcsclite-dev \
+          libpcsclite1 \
+          pcsc-tools \
+          gnupg \
+          gnupg-agent \
+          scdaemon \
+          libclang-dev \
+          nettle-dev \
+          pkg-config \
+          build-essential
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install just
+      uses: extractions/setup-just@v2
+    
+    - name: Build Rust IFD handler
+      run: |
+        cd ifd-jcecard
+        cargo build --release
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    
+    - name: Create Python virtualenv and install dependencies
+      run: |
+        python -m venv .venv
+        source .venv/bin/activate
+        python -m pip install --upgrade pip
+        python -m pip install -e ".[dev]"
+        python -m pip install pexpect pyscard
+    
+    - name: Install IFD handler to pcscd
+      run: |
+        sudo just install-ifd
+    
+    - name: Configure gpg-agent for loopback pinentry
+      run: |
+        mkdir -p ~/.gnupg
+        chmod 700 ~/.gnupg
+        echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+        echo "disable-ccid" >> ~/.gnupg/scdaemon.conf
+        gpgconf --kill all || true
+    
+    - name: Start TCP server and pcscd
+      run: |
+        source .venv/bin/activate
+        # Start TCP server in background
+        nohup python -m jcecard.tcp_server --debug > /tmp/tcp_server.log 2>&1 &
+        sleep 2
+        # Start pcscd in debug mode
+        sudo /usr/sbin/pcscd --foreground --debug --apdu > /tmp/pcscd_debug.log 2>&1 &
+        sleep 3
+        # Verify services are running
+        pgrep -f tcp_server && echo "TCP server is running"
+        pgrep pcscd && echo "pcscd is running"
+    
+    - name: Run tests
+      run: |
+        source .venv/bin/activate
+        # Run unit tests (excluding tests that need real card interaction via gpg)
+        pytest tests/test_apdu.py tests/test_tlv.py tests/test_pin_manager.py tests/test_crypto_backend.py tests/test_integration.py -v --timeout=300
+    
+    - name: Upload logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-logs
+        path: |
+          /tmp/tcp_server.log
+          /tmp/pcscd_debug.log
+        retention-days: 5

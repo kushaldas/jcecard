@@ -26,9 +26,9 @@ classifiers = [
     "Topic :: Security :: Cryptography",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-keywords = ["openpgp", "smartcard", "virtual", "vpcd", "cryptography"]
+keywords = ["openpgp", "smartcard", "virtual", "cryptography"]
 dependencies = [
-    "johnnycanencrypt>=0.16.0",
+    "johnnycanencrypt>=0.17.0",
     "cryptography",
 ]
 
