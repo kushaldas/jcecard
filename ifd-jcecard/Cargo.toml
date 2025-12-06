@@ -1,0 +1,18 @@
+[package]
+name = "ifd-jcecard"
+version = "0.1.0"
+edition = "2021"
+description = "PC/SC IFD Handler for jcecard virtual OpenPGP card"
+license = "MIT"
+
+[lib]
+name = "ifd_jcecard"
+crate-type = ["cdylib"]
+
+[dependencies]
+once_cell = "1.19"
+parking_lot = "0.12"
+log = "0.4"
+env_logger = "0.11"
+lazy_static = "1.4"
+libc = "0.2"

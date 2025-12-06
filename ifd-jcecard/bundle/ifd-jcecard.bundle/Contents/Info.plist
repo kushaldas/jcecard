@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>libifd_jcecard.so</string>
+    
+    <key>ifdFriendlyName</key>
+    <string>jcecard Virtual OpenPGP Card</string>
+    
+    <key>ifdProtocol</key>
+    <string>serial</string>
+    
+    <key>ifdCapabilities</key>
+    <string>0x00000000</string>
+    
+    <!-- For serial/virtual readers, we don't use USB VID/PID -->
+    <key>ifdDeviceName</key>
+    <string>/dev/null:35963</string>
+</dict>
+</plist>
