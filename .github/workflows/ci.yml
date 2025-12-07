@@ -42,11 +42,6 @@ jobs:
       run: |
         sudo ln -sf $(which just) /usr/local/bin/just
     
-    - name: Build Rust IFD handler
-      run: |
-        cd ifd-jcecard
-        cargo build --release
-
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -59,7 +54,15 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install -e ".[dev]"
         python -m pip install pexpect pyscard
-    
+
+    - name: Lint
+      run: just lint
+
+    - name: Build Rust IFD handler
+      run: |
+        cd ifd-jcecard
+        cargo build --release
+
     - name: Install IFD handler to pcscd
       run: |
         just install-ifd
