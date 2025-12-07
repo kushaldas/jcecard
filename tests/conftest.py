@@ -3,17 +3,14 @@ Pytest configuration and fixtures for OpenPGP card tests.
 """
 
 import pytest
-import pexpect
 import time
-from dataclasses import dataclass, field
-from typing import Optional
 import hashlib
 import os
 from pathlib import Path
 
 
 # Import modules to test
-from jcecard.card_data import CardState, PINData, CardholderData, KeySlot, AlgorithmAttributes
+from jcecard.card_data import CardState, PINData
 from jcecard.pin_manager import PINManager
 
 

@@ -9,7 +9,6 @@ Prerequisites:
 - pcscd must be running with the IFD handler installed
 """
 
-import pytest
 
 
 class TestResetYubikey:

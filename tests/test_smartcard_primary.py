@@ -9,7 +9,6 @@ Prerequisites:
 - The driver is at: /usr/lib/pcsc/drivers/ifd-jcecard.bundle/
 """
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -30,7 +29,6 @@ class TestSmartcardPrimary:
         First set name, verify it's stored in JSON, then set URL.
         """
         import json
-        from pathlib import Path
         from johnnycanencrypt import johnnycanencrypt as rjce
         
         # Reset the card
@@ -158,8 +156,8 @@ class TestSmartcardPrimary:
 
             k = ks.import_key(str(test_key_path))
 
-            # Save the public key for later
-            public_key = k.get_pub_key()
+            # Save the public key for later (unused for now)
+            _ = k.get_pub_key()
 
             # Upload the primary key to signing slot
             rjce.upload_primary_to_smartcard(k.keyvalue, b"12345678", "redhat", whichslot=2)

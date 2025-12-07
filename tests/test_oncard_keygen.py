@@ -17,9 +17,7 @@ import pytest
 import pexpect
 import tempfile
 import os
-import time
 import subprocess
-from pathlib import Path
 
 
 # Default PINs for virtual card
@@ -420,7 +418,6 @@ class GPGCardHelper:
             # Parse out the decrypted message (remove gpg status messages)
             lines = output.split('\n')
             decrypted_lines = []
-            in_message = False
             
             for line in lines:
                 # Skip gpg status lines
@@ -482,7 +479,7 @@ class GPGCardHelper:
                 )
                 
                 if result.returncode == 0:
-                    print(f"Decrypted successfully")
+                    print("Decrypted successfully")
                     return result.stdout
                 else:
                     print(f"Decryption failed: {result.stderr}")
@@ -523,7 +520,7 @@ class TestOnCardKeyGeneration:
         assert any('Application' in k or 'Reader' in k or 'Serial' in k for k in status.keys()), \
             f"Should have card info, got keys: {list(status.keys())[:5]}"
         
-        print(f"\nCard Status:")
+        print("\nCard Status:")
         for key, value in list(status.items())[:10]:
             print(f"  {key}: {value}")
     
@@ -551,7 +548,7 @@ class TestOnCardKeyGeneration:
         
         # Verify keys are on card
         status = gpg_helper.get_card_status()
-        print(f"\nCard status after key generation:")
+        print("\nCard status after key generation:")
         for key, value in status.items():
             if 'key' in key.lower() or 'finger' in key.lower():
                 print(f"  {key}: {value}")

@@ -16,7 +16,7 @@ Default PINs:
 import hashlib
 import logging
 from enum import IntEnum
-from typing import Optional, Tuple
+from typing import Tuple
 from dataclasses import dataclass
 
 from .card_data import CardState, PINData
