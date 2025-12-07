@@ -63,6 +63,7 @@ def jcecard_process():
             )
         
         # Try to connect to verify the card is responsive
+        assert jcecard_reader is not None, "jcecard reader not found"
         connection = jcecard_reader.createConnection()
         connection.connect()
         atr = connection.getATR()

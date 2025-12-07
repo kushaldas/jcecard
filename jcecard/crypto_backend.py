@@ -19,6 +19,9 @@ from dataclasses import dataclass
 from typing import Optional, Union
 from enum import IntEnum
 
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateNumbers
+
+
 from .card_data import AlgorithmAttributes, AlgorithmID
 
 
@@ -579,6 +582,9 @@ class CryptoBackend:
             # Convert to integer and do raw RSA operation
             padded_int = int.from_bytes(padded, 'big')
             private_numbers = private_key.private_numbers()  # type: ignore[union-attr]
+            
+            # Type narrowing for RSA private numbers
+            assert isinstance(private_numbers, RSAPrivateNumbers), "Expected RSA private numbers"
             
             # RSA signature: m^d mod n
             signature_int = pow(padded_int, private_numbers.d, private_numbers.public_numbers.n)

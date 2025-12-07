@@ -227,6 +227,7 @@ class TestKeyGeneration:
         result_sig = backend.generate_curve25519_key(KeyType.SIGNATURE)
         assert result_sig is not None
         assert len(result_sig.private_key_data) == 32, "Ed25519 private key should be 32 bytes"
+        assert result_sig.raw_public_key is not None, "Ed25519 public key should not be None"
         assert len(result_sig.raw_public_key) == 32, "Ed25519 public key should be 32 bytes"
         print(f"Ed25519 key generated successfully")
         print(f"Fingerprint: {result_sig.fingerprint.hex().upper()}")

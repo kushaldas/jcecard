@@ -303,7 +303,7 @@ class GPGCardHelper:
         finally:
             child.close()
     
-    def export_public_key(self, key_id: str = None) -> str:
+    def export_public_key(self, key_id: str | None = None) -> str:
         """
         Export the public key from the card.
         
@@ -414,6 +414,8 @@ class GPGCardHelper:
             
             # Get output
             output = child.before
+            if output is None:
+                raise ValueError("No output received from GPG")
             
             # Parse out the decrypted message (remove gpg status messages)
             lines = output.split('\n')

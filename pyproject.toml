@@ -38,6 +38,7 @@ dev = [
     "pytest-cov",
     "flit",
     "ty",
+    "pyscard",
 ]
 
 [project.urls]
