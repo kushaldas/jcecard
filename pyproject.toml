@@ -39,6 +39,7 @@ dev = [
     "flit",
     "ty",
     "pyscard",
+    "ruff",
 ]
 
 [project.urls]

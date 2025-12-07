@@ -71,6 +71,8 @@ status:
 rebuild: install-ifd restart-all
     @echo "Full rebuild complete"
 
-# Check linting with ty
+# Check linting with ty & ruff
 lint:
     ty check .
+    ruff check .
+
