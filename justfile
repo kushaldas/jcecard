@@ -70,3 +70,7 @@ status:
 # Full rebuild: build IFD, install, and restart all services
 rebuild: install-ifd restart-all
     @echo "Full rebuild complete"
+
+# Check linting with ty
+lint:
+    ty check .

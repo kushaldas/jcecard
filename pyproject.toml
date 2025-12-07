@@ -37,6 +37,7 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
     "flit",
+    "ty",
 ]
 
 [project.urls]
