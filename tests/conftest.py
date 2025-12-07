@@ -6,6 +6,7 @@ import pytest
 import time
 import hashlib
 import os
+import subprocess
 from pathlib import Path
 
 
@@ -17,6 +18,26 @@ from jcecard.pin_manager import PINManager
 def get_card_state_path() -> Path:
     """Get the path to the card state file."""
     return Path(os.path.expanduser("~/.jcecard")) / "card_state.json"
+
+
+def kill_gpg_agents():
+    """Kill gpg-agent and scdaemon to release card."""
+    try:
+        # Use gpgconf to properly kill the agents
+        subprocess.run(["gpgconf", "--kill", "all"], capture_output=True, timeout=5)
+    except Exception:
+        pass
+    # Also try direct kill as fallback
+    try:
+        subprocess.run(["pkill", "-9", "scdaemon"], capture_output=True, timeout=5)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["pkill", "-9", "gpg-agent"], capture_output=True, timeout=5)
+    except Exception:
+        pass
+    # Give time for processes to die and release card
+    time.sleep(0.5)
 
 
 @pytest.fixture
@@ -34,6 +55,9 @@ def jcecard_process():
     Then start pcscd in debug mode:
         sudo /usr/sbin/pcscd --foreground --debug --apdu
     """
+    # Kill any existing gpg-agent/scdaemon to release card before test
+    kill_gpg_agents()
+    
     # Check if we can connect to the card via pcscd
     try:
         from smartcard.System import readers
@@ -77,6 +101,9 @@ def jcecard_process():
     
     # Yield None since we don't need to manage a process anymore
     yield None
+    
+    # After test: kill gpg-agent/scdaemon to release card for next test
+    kill_gpg_agents()
 
 
 @pytest.fixture
