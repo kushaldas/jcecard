@@ -14,13 +14,11 @@ from typing import Callable, Optional
 from .apdu import (SW, APDUCommand, APDUError, APDUParser, APDUResponse,
                    OpenPGPIns)
 from .atr import DEFAULT_ATR
-from .card_data import AlgorithmAttributes, AlgorithmID, CardDataStore, CardholderData, CardState
-from .crypto_backend import (CryptoBackend, DecryptionResult, GeneratedKey,
-                             KeyType, SignatureResult, SimpleCryptoBackend,
-                             get_crypto_backend)
+from .card_data import AlgorithmAttributes, AlgorithmID, CardDataStore, CardState
+from .crypto_backend import (KeyType, get_crypto_backend)
 from .pin_manager import PINManager, PINRef, PINResult
-from .security_state import AccessCondition, OperationAccess, SecurityState
-from .tlv import TLV, OpenPGPTag, TLVEncoder, TLVParser
+from .security_state import OperationAccess, SecurityState
+from .tlv import TLVEncoder, TLVParser
 from .vpcd_connection import VPCDConnection
 
 # Configure logging
@@ -201,7 +199,6 @@ class OpenPGPCard:
         Returns:
             The response bytes (data + SW)
         """
-        import sys
         try:
             logger.info(f"Parsing APDU: {raw_apdu[:20].hex()}...")
             sys.stdout.flush()
@@ -816,7 +813,6 @@ class OpenPGPCard:
         - 7F48 (Public Key DO) with key components
         - 5F48 (Concatenated Key Data) with actual key data
         """
-        import sys
         if not self.selected:
             return APDUResponse.error(SW.CONDITIONS_NOT_SATISFIED)
         
@@ -847,7 +843,6 @@ class OpenPGPCard:
           └─ 5F48 xx (Concatenated Key Data)
                └─ actual private key material
         """
-        import sys
         logger.info(f"Key import data: {data[:50].hex()}...")
         sys.stdout.flush()
         sys.stderr.flush()

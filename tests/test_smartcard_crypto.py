@@ -260,7 +260,6 @@ class TestSmartcardRSAOperations:
         
         Verifies that fingerprints are correctly stored.
         """
-        import base64
         
         with tempfile.TemporaryDirectory() as tempdir:
             ks = jce.KeyStore(tempdir)

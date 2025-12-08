@@ -29,7 +29,7 @@ Constructed vs Primitive (bit 6 of first byte):
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Union, Iterator
+from typing import List, Optional, Iterator
 import logging
 
 

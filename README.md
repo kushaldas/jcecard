@@ -5,6 +5,19 @@ TCP server, made for testing
 [johnnycanencrypt](https://github.com/kushaldas/johnnycanencrypt) and related
 desktop applications.
 
+
+## Available/tested features
+
+- Import RSA4096 and CV25519 keys/subkeys
+- Signing operation
+- Encryption / decryption operation
+- On card CV25519 generation
+
+## Written but not tested yet
+
+- Authention (for SSH)
+- On card RSA4096 key generaion
+
 ## Using jcecard in CI (GitHub Actions)
 
 Below is an example of how to set up the virtual OpenPGP card in GitHub Actions for testing.
@@ -131,7 +144,9 @@ This is required if you want to use `gnupg` with the virtual card in CI:
     retention-days: 5
 ```
 
-## Default PINs
+### Default PINs
 
 - **User PIN**: `123456`
 - **Admin PIN**: `12345678`
+
+

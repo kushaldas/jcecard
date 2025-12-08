@@ -16,7 +16,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional
 from enum import IntEnum
 
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateNumbers
@@ -103,11 +103,8 @@ class CryptoBackend:
     @staticmethod
     def is_available() -> bool:
         """Check if crypto backend is available."""
-        try:
-            from cryptography.hazmat.primitives.asymmetric import rsa, ed25519, x25519
-            return True
-        except ImportError:
-            return False
+        import importlib.util
+        return importlib.util.find_spec("cryptography") is not None
     
     def generate_rsa_key(
         self,
@@ -431,7 +428,7 @@ class CryptoBackend:
         # but the cryptography library expects little-endian.
         if algorithm.algorithm_id == AlgorithmID.ECDH_X25519 and len(raw_key) == 32:
             raw_key = bytes(reversed(raw_key))
-            logger.debug(f"Reversed byte order for X25519 key")
+            logger.debug("Reversed byte order for X25519 key")
         
         self._raw_private_keys[key_type] = raw_key
         self._algorithm_info[key_type] = algorithm
@@ -575,7 +572,7 @@ class CryptoBackend:
             # 0x00 || 0x01 || padding_bytes(0xFF) || 0x00 || DigestInfo
             padding_length = key_size - 3 - len(data)
             if padding_length < 8:
-                return SignatureResult(b'', False, f"DigestInfo too long for key size")
+                return SignatureResult(b'', False, "DigestInfo too long for key size")
             
             padded = b'\x00\x01' + (b'\xff' * padding_length) + b'\x00' + data
             

@@ -42,11 +42,6 @@ jobs:
       run: |
         sudo ln -sf $(which just) /usr/local/bin/just
     
-    - name: Build Rust IFD handler
-      run: |
-        cd ifd-jcecard
-        cargo build --release
-
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -59,7 +54,15 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install -e ".[dev]"
         python -m pip install pexpect pyscard
-    
+
+    - name: Lint
+      run: just lint
+
+    - name: Build Rust IFD handler
+      run: |
+        cd ifd-jcecard
+        cargo build --release
+
     - name: Install IFD handler to pcscd
       run: |
         just install-ifd
@@ -78,25 +81,31 @@ jobs:
         # Start TCP server in background
         nohup python -m jcecard.tcp_server --debug > /tmp/tcp_server.log 2>&1 &
         sleep 2
-        # Start pcscd in debug mode
-        sudo /usr/sbin/pcscd --foreground --debug --apdu > /tmp/pcscd_debug.log 2>&1 &
-        sleep 3
+        # Stop any existing pcscd first (ubuntu-latest has it running by default)
+        sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
+        sudo pkill -9 pcscd 2>/dev/null || true
+        sleep 1
+        # Start pcscd in debug mode with polkit disabled (required for CI)
+        # Ubuntu's pcscd 2.0+ uses polkit for authorization which blocks non-root users
+        sudo /usr/sbin/pcscd --foreground --debug --apdu --disable-polkit > /tmp/pcscd_debug.log 2>&1 &
+        sleep 5
         # Verify services are running
         pgrep -f tcp_server && echo "TCP server is running"
         pgrep pcscd && echo "pcscd is running"
+        # Verify card is accessible via PC/SC
+        python -c "from smartcard.System import readers; r = readers(); print(f'Readers: {r}'); assert len(r) > 0, 'No readers found'"
     
     - name: Run tests
       run: |
         source .venv/bin/activate
         # Run unit tests (excluding tests that need real card interaction via gpg)
-        timeout 600 pytest tests/test_apdu.py tests/test_tlv.py tests/test_pin_manager.py tests/test_crypto_backend.py tests/test_integration.py -v
+        timeout 600 pytest -vvv
     
     - name: Upload logs on failure
-      if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: debug-logs
         path: |
           /tmp/tcp_server.log
           /tmp/pcscd_debug.log
-        retention-days: 5
+        retention-days: 1

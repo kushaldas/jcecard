@@ -73,6 +73,9 @@ rebuild: install-ifd restart-all
 
 # Check linting with ty & ruff
 lint:
+    #!/usr/bin/env bash
+    set -x
+    source .venv/bin/activate
     ty check .
     ruff check .
 

@@ -9,9 +9,7 @@ Tests cover:
 - PIN blocking and unblocking
 """
 
-import pytest
 import hashlib
-from jcecard.card_data import CardState, PINData
 from jcecard.pin_manager import (
     PINManager,
     PINRef,
@@ -307,7 +305,7 @@ class TestPINBlocking:
         
         # Use all retries with wrong but valid length reset code
         for _ in range(3):
-            result = pin_manager.verify_reset_code("wrongcode1")
+            pin_manager.verify_reset_code("wrongcode1")
         
         assert not pin_manager.is_rc_available()
 
