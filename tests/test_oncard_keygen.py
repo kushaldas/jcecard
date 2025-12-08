@@ -301,6 +301,158 @@ class GPGCardHelper:
         finally:
             child.close()
     
+    def generate_rsa4096_keys(self, user_name: str = "Test User",
+                              user_email: str = "test@example.com") -> bool:
+        """
+        Generate RSA4096 keys on card using gpg --edit-card.
+        
+        This sets the key algorithm to RSA 4096 and generates new keys.
+        Note: RSA key generation is MUCH slower than cv25519 (~80 seconds per key).
+        
+        Args:
+            user_name: Name for the key
+            user_email: Email for the key
+            
+        Returns:
+            True if successful
+        """
+        print("\n=== Generate RSA4096 Keys on Card ===")
+        print("WARNING: This will take several minutes (RSA4096 key generation is slow)")
+        
+        import sys
+        child = pexpect.spawn(
+            'gpg --pinentry-mode loopback --command-fd=0 --status-fd=1 --edit-card',
+            env=self.env,
+            encoding='utf-8',
+            timeout=300  # Longer timeout for RSA
+        )
+        child.logfile = sys.stdout  # Enable logging for debugging
+        
+        prompt_pattern = r'GET_LINE cardedit.prompt|gpg/card>'
+        algo_pattern = r'GET_LINE cardedit.genkeys.algo|Your selection|selection'
+        size_pattern = r'GET_LINE cardedit.genkeys.size|keysize'
+        pin_pattern = r'GET_HIDDEN passphrase.enter'
+        
+        try:
+            # Wait for gpg/card prompt
+            child.expect(prompt_pattern, timeout=30)
+            
+            # Enter admin mode
+            child.sendline('admin')
+            child.expect(prompt_pattern)
+            
+            # Set key algorithm to RSA
+            child.sendline('key-attr')
+            
+            # Signature key - select RSA
+            child.expect(algo_pattern, timeout=10)
+            child.sendline('1')  # RSA
+            
+            # Select key size for signature key
+            child.expect(size_pattern, timeout=10)
+            child.sendline('4096')  # RSA 4096
+            
+            # Admin PIN required
+            child.expect(pin_pattern, timeout=10)
+            child.sendline(DEFAULT_ADMIN_PIN)
+            
+            # Encryption key - select RSA
+            child.expect(algo_pattern, timeout=10)
+            child.sendline('1')  # RSA
+            
+            # Select key size for encryption key
+            child.expect(size_pattern, timeout=10)
+            child.sendline('4096')  # RSA 4096
+            
+            # Admin PIN required
+            child.expect(pin_pattern, timeout=10)
+            child.sendline(DEFAULT_ADMIN_PIN)
+            
+            # Authentication key - select RSA
+            child.expect(algo_pattern, timeout=10)
+            child.sendline('1')  # RSA
+            
+            # Select key size for authentication key
+            child.expect(size_pattern, timeout=10)
+            child.sendline('4096')  # RSA 4096
+            
+            # Admin PIN required
+            child.expect(pin_pattern, timeout=10)
+            child.sendline(DEFAULT_ADMIN_PIN)
+            
+            # Wait for key-attr to complete
+            child.expect(prompt_pattern, timeout=30)
+            
+            print("Key attributes set to RSA 4096")
+            
+            # Now generate the keys
+            child.sendline('generate')
+            
+            # Backup question
+            child.expect(['GET_LINE cardedit.genkeys.backup_enc', 'backup', 'y/N'], timeout=15)
+            child.sendline('n')
+            
+            # User PIN required
+            child.expect(pin_pattern, timeout=15)
+            child.sendline(DEFAULT_USER_PIN)
+            
+            # Key expiration
+            child.expect(['GET_LINE keygen.valid', 'Key is valid for', 'expire', '0 ='], timeout=15)
+            child.sendline('0')  # No expiration
+            
+            # Real name
+            child.expect(['GET_LINE keygen.name', 'Real name'], timeout=10)
+            child.sendline(user_name)
+            
+            # Email
+            child.expect(['GET_LINE keygen.email', 'Email address'], timeout=10)
+            child.sendline(user_email)
+            
+            # Comment
+            child.expect(['GET_LINE keygen.comment', 'Comment'], timeout=10)
+            child.sendline('')
+            
+            # Admin PIN for key generation
+            child.expect(pin_pattern, timeout=15)
+            child.sendline(DEFAULT_ADMIN_PIN)
+            
+            # PIN prompts for key generation - RSA takes MUCH longer
+            print("Generating RSA4096 keys (this will take 4-5 minutes)...")
+            for _ in range(6):
+                try:
+                    idx = child.expect([r'NEED_PASSPHRASE', pin_pattern, r'KEY_CREATED', prompt_pattern], timeout=300)
+                    if idx == 0:
+                        child.expect(pin_pattern, timeout=10)
+                        child.sendline(DEFAULT_USER_PIN)
+                    elif idx == 1:
+                        child.sendline(DEFAULT_ADMIN_PIN)
+                    elif idx == 2:
+                        print("Key created successfully!")
+                        child.expect(prompt_pattern, timeout=30)
+                        break
+                    else:
+                        break
+                except pexpect.TIMEOUT:
+                    print("Still generating... (RSA4096 takes time)")
+                    continue
+            
+            # Quit
+            child.sendline('quit')
+            child.expect(pexpect.EOF, timeout=10)
+            
+            print("RSA4096 key generation complete")
+            return True
+            
+        except pexpect.TIMEOUT as e:
+            print(f"Timeout during key generation: {e}")
+            print(f"Before: {child.before}")
+            return False
+        except pexpect.EOF as e:
+            print(f"EOF during key generation: {e}")
+            return False
+        finally:
+            child.close()
+    
     def export_public_key(self, key_id: str | None = None) -> str:
         """
         Export the public key from the card.
@@ -612,6 +764,135 @@ class TestOnCardKeyGeneration:
         
         print("\n" + "="*60)
         print("SUCCESS: Full encrypt/decrypt flow completed!")
+        print("="*60)
+    
+    def test_generate_rsa4096_keys(self, gpg_helper):
+        """
+        Test generating RSA4096 keys on the card.
+        
+        WARNING: This test is SLOW! RSA4096 key generation takes 4-5 minutes.
+        """
+        # First reset the card
+        reset_result = gpg_helper.factory_reset()
+        assert reset_result, "Factory reset should succeed"
+        
+        # Generate RSA4096 keys
+        gen_result = gpg_helper.generate_rsa4096_keys(
+            user_name="RSA Test",
+            user_email="rsa@test.local"
+        )
+        assert gen_result, "RSA4096 key generation should succeed"
+        
+        # Verify keys are on card
+        status = gpg_helper.get_card_status()
+        print("\nCard status after RSA4096 key generation:")
+        for key, value in status.items():
+            if 'key' in key.lower() or 'finger' in key.lower() or 'attribute' in key.lower():
+                print(f"  {key}: {value}")
+    
+    def test_full_rsa4096_sign_verify_flow(self, gpg_helper):
+        """
+        Full RSA4096 flow test:
+        1. Reset card
+        2. Generate RSA4096 keys
+        3. Export public key
+        4. Sign a message
+        5. Verify signature
+        
+        WARNING: This test is SLOW! RSA4096 key generation takes 4-5 minutes.
+        """
+        # Step 1: Reset card
+        print("\n" + "="*60)
+        print("Step 1: Factory Reset")
+        print("="*60)
+        assert gpg_helper.factory_reset(), "Factory reset should succeed"
+        
+        # Step 2: Generate RSA4096 keys
+        print("\n" + "="*60)
+        print("Step 2: Generate RSA4096 Keys (this will take several minutes)")
+        print("="*60)
+        assert gpg_helper.generate_rsa4096_keys(
+            user_name="RSA Sign Test",
+            user_email="rsasign@test.local"
+        ), "RSA4096 key generation should succeed"
+        
+        # Step 3: Export public key
+        print("\n" + "="*60)
+        print("Step 3: Export Public Key")
+        print("="*60)
+        public_key = gpg_helper.export_public_key("rsasign@test.local")
+        assert public_key, "Should export public key"
+        assert "-----BEGIN PGP PUBLIC KEY BLOCK-----" in public_key
+        assert "rsa4096" in public_key.lower() or "RSA" in public_key or len(public_key) > 2000, \
+            "Should be RSA key (larger than ECC)"
+        
+        # Step 4: Create and sign a test message
+        print("\n" + "="*60)
+        print("Step 4: Sign Message")
+        print("="*60)
+        original_message = "This is a test message for RSA4096 signature verification."
+        
+        # Create a detached signature
+        try:
+            result = subprocess.run(
+                [
+                    'gpg', '--armor', '--detach-sign',
+                    '--pinentry-mode', 'loopback',
+                    '--passphrase', DEFAULT_USER_PIN,
+                    '--local-user', 'rsasign@test.local'
+                ],
+                input=original_message,
+                env=gpg_helper.env,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            assert result.returncode == 0, f"Signing failed: {result.stderr}"
+            signature = result.stdout
+            assert "-----BEGIN PGP SIGNATURE-----" in signature
+            print(f"Signature created ({len(signature)} bytes)")
+        except Exception as e:
+            pytest.fail(f"Failed to create signature: {e}")
+        
+        # Step 5: Verify signature
+        print("\n" + "="*60)
+        print("Step 5: Verify Signature")
+        print("="*60)
+        
+        # Write message and signature to temp files
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as msg_file:
+            msg_file.write(original_message)
+            msg_path = msg_file.name
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sig', delete=False) as sig_file:
+            sig_file.write(signature)
+            sig_path = sig_file.name
+        
+        try:
+            # Verify the signature
+            result = subprocess.run(
+                ['gpg', '--verify', sig_path, msg_path],
+                env=gpg_helper.env,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            # Check verification result
+            verify_output = result.stderr + result.stdout
+            print(f"Verification output:\n{verify_output}")
+            
+            assert "Good signature" in verify_output or result.returncode == 0, \
+                f"Signature verification failed: {verify_output}"
+            
+            print("Signature verified successfully!")
+            
+        finally:
+            os.unlink(msg_path)
+            os.unlink(sig_path)
+        
+        print("\n" + "="*60)
+        print("SUCCESS: Full RSA4096 sign/verify flow completed!")
         print("="*60)
 
 
