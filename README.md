@@ -12,11 +12,11 @@ desktop applications.
 - Signing operation
 - Encryption / decryption operation
 - On card CV25519 generation
+- On card RSA4096 key generaion
 
 ## Written but not tested yet
 
 - Authention (for SSH)
-- On card RSA4096 key generaion
 
 ## Using jcecard in CI (GitHub Actions)
 

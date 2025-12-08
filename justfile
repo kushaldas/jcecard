@@ -27,6 +27,21 @@ install-ifd: build-ifd
     
     echo "IFD handler installed successfully"
 
+# Uninstall the IFD handler from pcscd drivers directory
+uninstall-ifd:
+    #!/usr/bin/env bash
+    set -e
+    BUNDLE_DIR="/usr/lib/pcsc/drivers/ifd-jcecard.bundle"
+    CONF_DIR="/etc/reader.conf.d"
+    
+    echo "Uninstalling driver bundle..."
+    sudo rm -rf "$BUNDLE_DIR"
+    
+    echo "Uninstalling reader configuration..."
+    sudo rm -f "$CONF_DIR/jcecard"
+    
+    echo "IFD handler uninstalled successfully"
+
 # Restart the TCP server
 restart-tcp: && restart-pcscd
     #!/usr/bin/env bash
