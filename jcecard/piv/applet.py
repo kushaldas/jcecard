@@ -7,7 +7,6 @@ Implements NIST SP 800-73-4 PIV card specification.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 from dataclasses import dataclass, field
@@ -17,7 +16,6 @@ from ..apdu import APDUCommand, APDUResponse, SW
 from ..tlv import TLVEncoder
 from .data_objects import (
     PIVAlgorithm,
-    PIVDataObjectID,
     PIVDataObjects,
     PIVKeyData,
     PIVKeyRef,
@@ -748,6 +746,8 @@ class PIVApplet:
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import padding, ec
         from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+        from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
         from cryptography.hazmat.backends import default_backend
         
         try:
@@ -758,7 +758,7 @@ class PIVApplet:
                 backend=default_backend()
             )
             
-            if key_data.is_rsa():
+            if key_data.is_rsa() and isinstance(private_key, RSAPrivateKey):
                 # RSA signature (PKCS#1 v1.5)
                 # Data should be DigestInfo (hash OID + hash value)
                 signature = private_key.sign(
@@ -766,13 +766,16 @@ class PIVApplet:
                     padding.PKCS1v15(),
                     Prehashed(hashes.SHA256())  # Assume SHA256
                 )
-            else:
+            elif isinstance(private_key, EllipticCurvePrivateKey):
                 # ECDSA signature
                 # Data is the hash to sign
                 signature = private_key.sign(
                     data,
                     ec.ECDSA(Prehashed(hashes.SHA256()))
                 )
+            else:
+                logger.error(f"Unsupported key type for signing: {type(private_key)}")
+                return make_response(SW.WRONG_DATA)
             
             # Return signature in 7C template with 82 tag
             response = bytes([0x7C, len(signature) + 2, 0x82, len(signature)]) + signature
@@ -788,6 +791,8 @@ class PIVApplet:
         """Decrypt data or perform ECDH."""
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import padding, ec
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+        from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey
         from cryptography.hazmat.backends import default_backend
         
         try:
@@ -798,13 +803,13 @@ class PIVApplet:
                 backend=default_backend()
             )
             
-            if key_data.is_rsa():
+            if key_data.is_rsa() and isinstance(private_key, RSAPrivateKey):
                 # RSA decryption (PKCS#1 v1.5)
                 plaintext = private_key.decrypt(
                     cipher_text,
                     padding.PKCS1v15()
                 )
-            else:
+            elif isinstance(private_key, EllipticCurvePrivateKey):
                 # ECDH: cipher_text is the peer's public point
                 # Load peer public key from point
                 if cipher_text[0] != 0x04:
@@ -821,6 +826,9 @@ class PIVApplet:
                 # Perform ECDH
                 shared_key = private_key.exchange(ec.ECDH(), peer_public)
                 plaintext = shared_key
+            else:
+                logger.error(f"Unsupported key type for decrypt: {type(private_key)}")
+                return make_response(SW.WRONG_DATA)
             
             # Return result in 7C template with 82 tag
             if len(plaintext) <= 127:

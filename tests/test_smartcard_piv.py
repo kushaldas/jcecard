@@ -9,8 +9,6 @@ Run with: pytest tests/test_piv_yubico_tool_integration.py -xvs
 Or mark to skip if environment not ready: pytest -m "not integration"
 """
 
-import os
-import re
 import shutil
 import subprocess
 import tempfile

@@ -11,12 +11,10 @@ Tests the PIV card emulation functionality including:
 
 import pytest
 import hashlib
-import os
-from dataclasses import dataclass
 
-from jcecard.apdu import APDUCommand, APDUResponse, SW
+from jcecard.apdu import APDUCommand, SW
 from jcecard.piv import PIVApplet, PIVDataObjects, PIVSlot, PIVAlgorithm
-from jcecard.piv.applet import PIV_AID, PIVSW, PIVSecurityState, PIVKeyRef
+from jcecard.piv.applet import PIV_AID, PIVSW
 from jcecard.piv.data_objects import PIVKeyData
 
 
