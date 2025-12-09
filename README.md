@@ -6,7 +6,7 @@ TCP server, made for testing
 desktop applications.
 
 
-## Available/tested features
+## Available/tested features for OpenPGP
 
 - Import RSA4096 and CV25519 keys/subkeys
 - Signing operation
@@ -14,9 +14,35 @@ desktop applications.
 - On card CV25519 generation
 - On card RSA4096 key generaion
 
-## Written but not tested yet
+## Written but not tested yet in OpenPGP
 
 - Authention (for SSH)
+
+
+## Available/tested features for PIV (via yubico-piv-tool 2.7.2)
+
+- Card status and version information
+- PIN verification and PIN change
+- Management key authentication (TDES mutual auth)
+- Set CHUID (Card Holder Unique Identifier) data object
+- Set CCC (Card Capability Container) data object
+- On-card ECC P-256 key generation for all slots:
+  - Slot 9a (PIV Authentication)
+  - Slot 9c (Digital Signature)
+  - Slot 9d (Key Management)
+  - Slot 9e (Card Authentication)
+- Self-signed certificate generation
+- Certificate import
+- Certificate read
+- ECDSA signature operations
+- ECDH key agreement (key derivation)
+- Full ECC workflow (key generation → certificate → signing)
+
+### Default credentials
+
+- PIN: `123456`
+- PUK: `12345678`
+- Management Key: `010203040506070801020304050607080102030405060708`
 
 ## Using jcecard in CI (GitHub Actions)
 
@@ -144,7 +170,7 @@ This is required if you want to use `gnupg` with the virtual card in CI:
     retention-days: 5
 ```
 
-### Default PINs
+### Default PINs for OpenPGP card
 
 - **User PIN**: `123456`
 - **Admin PIN**: `12345678`
