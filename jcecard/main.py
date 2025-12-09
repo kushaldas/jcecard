@@ -17,6 +17,7 @@ from .atr import DEFAULT_ATR
 from .card_data import AlgorithmAttributes, AlgorithmID, CardDataStore, CardState
 from .crypto_backend import (KeyType, get_crypto_backend)
 from .pin_manager import PINManager, PINRef, PINResult
+from .piv import PIVApplet, PIV_AID
 from .security_state import OperationAccess, SecurityState
 from .tlv import TLVEncoder, TLVParser
 from .vpcd_connection import VPCDConnection
@@ -37,6 +38,10 @@ class OpenPGPCard:
     and maintaining card state.
     """
     
+    # Applet type enum
+    APPLET_OPENPGP = "openpgp"
+    APPLET_PIV = "piv"
+    
     def __init__(self, atr: bytes = DEFAULT_ATR, storage_path: Optional[Path] = None):
         """
         Initialize the OpenPGP card.
@@ -48,6 +53,9 @@ class OpenPGPCard:
         self.atr = atr
         self.selected = False
         self.powered = False
+        
+        # Track which applet is currently active
+        self._active_applet: Optional[str] = None
         
         # Response chaining buffer
         self._response_buffer: bytes = b''
@@ -70,6 +78,9 @@ class OpenPGPCard:
         
         # Initialize crypto backend
         self._crypto = get_crypto_backend()
+        
+        # Initialize PIV applet
+        self._piv_applet = PIVApplet()
         
         # Load existing keys if any
         self._load_stored_keys()
@@ -142,6 +153,7 @@ class OpenPGPCard:
         """Handle card power on."""
         self.powered = True
         self.selected = False
+        self._active_applet = None
         self._response_buffer = b''
         self._command_buffer = b''
         self._chaining_ins = None
@@ -154,10 +166,12 @@ class OpenPGPCard:
         """Handle card power off."""
         self.powered = False
         self.selected = False
+        self._active_applet = None
         self._response_buffer = b''
         self._command_buffer = b''
         self._chaining_ins = None
         self._security.reset()
+        self._piv_applet.reset()  # Reset PIV applet state
         self.save_state()
         logger.info("Card powered off")
     
@@ -172,6 +186,7 @@ class OpenPGPCard:
             The ATR to send
         """
         self.selected = False
+        self._active_applet = None
         self._response_buffer = b''
         self._command_buffer = b''
         self._chaining_ins = None
@@ -270,16 +285,24 @@ class OpenPGPCard:
         if cmd.cla not in (0x00, 0x0C, 0x10):  # 0x10 for chaining
             return APDUResponse.error(SW.CLA_NOT_SUPPORTED)
         
-        # Handle GET RESPONSE for chained responses
+        # Handle GET RESPONSE for chained responses (common to both applets)
         if cmd.ins == OpenPGPIns.GET_RESPONSE:
             return self._handle_get_response(cmd)
+        
+        # SELECT is always handled by this class to determine which applet to route to
+        if cmd.ins == OpenPGPIns.SELECT:
+            return self._handle_select(cmd)
+        
+        # Route to PIV applet if it's active
+        if self._active_applet == self.APPLET_PIV:
+            return self._piv_applet.process_apdu(cmd)
 
         # Check if card is terminated - only SELECT, ACTIVATE, and TERMINATE allowed
         if self.card_state.terminated:
             if cmd.ins not in (OpenPGPIns.SELECT, OpenPGPIns.ACTIVATE_FILE, OpenPGPIns.TERMINATE_DF):
                 return APDUResponse.error(SW.CONDITIONS_NOT_SATISFIED)
         
-        # Route based on instruction
+        # Route based on instruction for OpenPGP
         handlers: dict[int, Callable[[APDUCommand], APDUResponse]] = {
             OpenPGPIns.SELECT: self._handle_select,
             OpenPGPIns.GET_DATA: self._handle_get_data,
@@ -323,11 +346,20 @@ class OpenPGPCard:
         """Handle SELECT command."""
         # P1=0x04 means select by DF name (AID)
         if cmd.p1 == 0x04:
+            # Check if selecting PIV application (A0 00 00 03 08)
+            if len(cmd.data) >= 5 and cmd.data[:5] == PIV_AID:
+                self.selected = True
+                self._active_applet = self.APPLET_PIV
+                logger.info("PIV application selected")
+                # Let the PIV applet handle the selection response
+                return self._piv_applet.process_apdu(cmd)
+            
             # Check if selecting OpenPGP application
             # Compare the RID + PIX prefix (first 6 bytes)
             card_aid = self.card_state.get_aid()
             if cmd.data[:6] == card_aid[:6]:
                 self.selected = True
+                self._active_applet = self.APPLET_OPENPGP
                 logger.info("OpenPGP application selected")
                 
                 # Return FCI (File Control Information) or just success
@@ -431,6 +463,20 @@ class OpenPGPCard:
             # Yubikey returns: 81 01 20 90 00 (tag 81, len 1, value 0x20)
             data = state.get_general_feature_management()
             return APDUResponse.success(data)
+        
+        elif tag == 0x00D6:  # UIF for SIG (User Interaction Flag)
+            # Format: 2 bytes - first byte is mode (0=off, 1=on, 2=permanent), 
+            # second byte is features (typically 0x20 for button press)
+            uif_mode = state.key_sig.uif
+            return APDUResponse.success(bytes([uif_mode, 0x20]))
+        
+        elif tag == 0x00D7:  # UIF for DEC
+            uif_mode = state.key_dec.uif
+            return APDUResponse.success(bytes([uif_mode, 0x20]))
+        
+        elif tag == 0x00D8:  # UIF for AUT
+            uif_mode = state.key_aut.uif
+            return APDUResponse.success(bytes([uif_mode, 0x20]))
         
         else:
             logger.warning(f"Unknown GET DATA tag: {tag:04X}")
