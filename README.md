@@ -68,6 +68,20 @@ Below is an example of how to set up the virtual OpenPGP card in GitHub Actions 
       build-essential
 ```
 
+### Install yubico-piv-tool 2.7.2 for PIV related operations/tests
+
+You will need `yubico-piv-tool` version `2.7.2` for testing the PIV operations.
+I have built the package for `ubuntu-latest` on Github.
+
+```yaml
+- name: Install yubico-piv-tool from kushal's build
+  run: |
+    wget https://kushaldas.in/yubico.tar.gz
+    echo "222b9deb97dcd2ad03f216ac42caea91bd875d6f3e838d3f4a9ab0d01c433c4c  yubico.tar.gz" | sha256sum -c -
+    tar xvf yubico.tar.gz
+    sudo apt install ./yubico/*.deb
+```
+
 ### Install Rust and Just
 
 ```yaml
