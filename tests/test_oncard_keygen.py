@@ -46,6 +46,75 @@ class GPGCardHelper:
         """No cleanup needed when using user's GNUPGHOME."""
         pass
     
+    def delete_keys_by_email(self, email: str) -> bool:
+        """
+        Delete all GPG keys (public and secret) matching the given email.
+        
+        This prevents issues with multiple keys having the same email,
+        which causes GPG to prompt for confirmation.
+        
+        Args:
+            email: Email address to match keys against
+            
+        Returns:
+            True if cleanup succeeded (or no keys found)
+        """
+        print(f"\n=== Cleaning up existing keys for {email} ===")
+        
+        try:
+            # First, find all key fingerprints matching this email
+            result = subprocess.run(
+                ['gpg', '--list-keys', '--with-colons', email],
+                env=self.env,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                # No keys found is OK
+                print(f"No existing keys found for {email}")
+                return True
+            
+            # Parse fingerprints from output
+            fingerprints = []
+            for line in result.stdout.split('\n'):
+                if line.startswith('fpr:'):
+                    parts = line.split(':')
+                    if len(parts) >= 10:
+                        fingerprints.append(parts[9])
+            
+            if not fingerprints:
+                print(f"No keys found for {email}")
+                return True
+            
+            print(f"Found {len(fingerprints)} key(s) to delete")
+            
+            # Delete each key (secret first, then public)
+            for fpr in fingerprints:
+                # Delete secret key
+                subprocess.run(
+                    ['gpg', '--batch', '--yes', '--delete-secret-keys', fpr],
+                    env=self.env,
+                    capture_output=True,
+                    timeout=30
+                )
+                # Delete public key
+                subprocess.run(
+                    ['gpg', '--batch', '--yes', '--delete-keys', fpr],
+                    env=self.env,
+                    capture_output=True,
+                    timeout=30
+                )
+                print(f"Deleted key {fpr[:16]}...")
+            
+            print("Key cleanup complete")
+            return True
+            
+        except Exception as e:
+            print(f"Error during key cleanup: {e}")
+            return False
+    
     def get_card_status(self) -> dict:
         """
         Get card status using gpg --card-status.
@@ -687,6 +756,11 @@ class TestOnCardKeyGeneration:
     
     def test_generate_cv25519_keys(self, gpg_helper):
         """Test generating cv25519 keys on the card."""
+        test_email = "oncard@test.local"
+        
+        # Clean up any existing keys with this email
+        gpg_helper.delete_keys_by_email(test_email)
+        
         # First reset the card
         reset_result = gpg_helper.factory_reset()
         assert reset_result, "Factory reset should succeed"
@@ -694,7 +768,7 @@ class TestOnCardKeyGeneration:
         # Generate keys
         gen_result = gpg_helper.generate_cv25519_keys(
             user_name="OnCard Test",
-            user_email="oncard@test.local"
+            user_email=test_email
         )
         assert gen_result, "Key generation should succeed"
         
@@ -715,6 +789,14 @@ class TestOnCardKeyGeneration:
         5. Decrypt on card
         6. Verify decrypted matches original
         """
+        test_email = "encrypt@test.local"
+        
+        # Step 0: Clean up any existing keys with the test email
+        print("\n" + "="*60)
+        print("Step 0: Clean up existing test keys")
+        print("="*60)
+        gpg_helper.delete_keys_by_email(test_email)
+        
         # Step 1: Reset card
         print("\n" + "="*60)
         print("Step 1: Factory Reset")
@@ -727,14 +809,14 @@ class TestOnCardKeyGeneration:
         print("="*60)
         assert gpg_helper.generate_cv25519_keys(
             user_name="Encrypt Test",
-            user_email="encrypt@test.local"
+            user_email=test_email
         ), "Key generation should succeed"
         
         # Step 3: Export public key
         print("\n" + "="*60)
         print("Step 3: Export Public Key")
         print("="*60)
-        public_key = gpg_helper.export_public_key("encrypt@test.local")
+        public_key = gpg_helper.export_public_key(test_email)
         assert public_key, "Should export public key"
         assert "-----BEGIN PGP PUBLIC KEY BLOCK-----" in public_key
         
@@ -743,7 +825,7 @@ class TestOnCardKeyGeneration:
         print("Step 4: Encrypt Message")
         print("="*60)
         original_message = "Hello from on-card keygen! This is a test message for cv25519 encryption."
-        encrypted = gpg_helper.encrypt_message(original_message, "encrypt@test.local")
+        encrypted = gpg_helper.encrypt_message(original_message, test_email)
         assert encrypted, "Should encrypt message"
         assert "-----BEGIN PGP MESSAGE-----" in encrypted
         
@@ -766,29 +848,6 @@ class TestOnCardKeyGeneration:
         print("SUCCESS: Full encrypt/decrypt flow completed!")
         print("="*60)
     
-    def test_generate_rsa4096_keys(self, gpg_helper):
-        """
-        Test generating RSA4096 keys on the card.
-        
-        WARNING: This test is SLOW! RSA4096 key generation takes 4-5 minutes.
-        """
-        # First reset the card
-        reset_result = gpg_helper.factory_reset()
-        assert reset_result, "Factory reset should succeed"
-        
-        # Generate RSA4096 keys
-        gen_result = gpg_helper.generate_rsa4096_keys(
-            user_name="RSA Test",
-            user_email="rsa@test.local"
-        )
-        assert gen_result, "RSA4096 key generation should succeed"
-        
-        # Verify keys are on card
-        status = gpg_helper.get_card_status()
-        print("\nCard status after RSA4096 key generation:")
-        for key, value in status.items():
-            if 'key' in key.lower() or 'finger' in key.lower() or 'attribute' in key.lower():
-                print(f"  {key}: {value}")
     
     def test_full_rsa4096_sign_verify_flow(self, gpg_helper):
         """
@@ -801,6 +860,14 @@ class TestOnCardKeyGeneration:
         
         WARNING: This test is SLOW! RSA4096 key generation takes 4-5 minutes.
         """
+        test_email = "rsasign@test.local"
+        
+        # Step 0: Clean up any existing keys with the test email
+        print("\n" + "="*60)
+        print("Step 0: Clean up existing test keys")
+        print("="*60)
+        gpg_helper.delete_keys_by_email(test_email)
+        
         # Step 1: Reset card
         print("\n" + "="*60)
         print("Step 1: Factory Reset")
@@ -813,14 +880,14 @@ class TestOnCardKeyGeneration:
         print("="*60)
         assert gpg_helper.generate_rsa4096_keys(
             user_name="RSA Sign Test",
-            user_email="rsasign@test.local"
+            user_email=test_email
         ), "RSA4096 key generation should succeed"
         
         # Step 3: Export public key
         print("\n" + "="*60)
         print("Step 3: Export Public Key")
         print("="*60)
-        public_key = gpg_helper.export_public_key("rsasign@test.local")
+        public_key = gpg_helper.export_public_key(test_email)
         assert public_key, "Should export public key"
         assert "-----BEGIN PGP PUBLIC KEY BLOCK-----" in public_key
         assert "rsa4096" in public_key.lower() or "RSA" in public_key or len(public_key) > 2000, \
@@ -839,13 +906,13 @@ class TestOnCardKeyGeneration:
                     'gpg', '--armor', '--detach-sign',
                     '--pinentry-mode', 'loopback',
                     '--passphrase', DEFAULT_USER_PIN,
-                    '--local-user', 'rsasign@test.local'
+                    '--local-user', test_email
                 ],
                 input=original_message,
                 env=gpg_helper.env,
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=120
             )
             assert result.returncode == 0, f"Signing failed: {result.stderr}"
             signature = result.stdout
