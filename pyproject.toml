@@ -40,6 +40,7 @@ dev = [
     "ty",
     "pyscard",
     "ruff",
+    "pexpect",
 ]
 
 [project.urls]

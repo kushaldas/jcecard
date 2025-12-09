@@ -27,7 +27,14 @@ jobs:
           nettle-dev \
           pkg-config \
           build-essential
-    
+
+    - name: Install yubico-piv-tool from kushal's build
+      run: |
+        wget https://kushaldas.in/yubico.tar.gz
+        echo "222b9deb97dcd2ad03f216ac42caea91bd875d6f3e838d3f4a9ab0d01c433c4c  yubico.tar.gz" | sha256sum -c -
+        tar xvf yubico.tar.gz
+        sudo apt install ./yubico/*.deb   
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
     

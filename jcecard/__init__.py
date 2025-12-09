@@ -85,6 +85,14 @@ from .tcp_server import (
     main as tcp_main,
 )
 
+# PIV module
+from .piv import (
+    PIVApplet,
+    PIVDataObjects,
+    PIVSlot,
+    PIVAlgorithm,
+)
+
 __all__ = [
     # Version
     "__version__",
@@ -155,5 +163,11 @@ __all__ = [
     # TCP Server
     "TCPServer",
     "tcp_main",
+    
+    # PIV
+    "PIVApplet",
+    "PIVDataObjects",
+    "PIVSlot",
+    "PIVAlgorithm",
 ]
 
