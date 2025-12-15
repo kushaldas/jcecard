@@ -1448,18 +1448,22 @@ def run_card(host: str = 'localhost', port: int = 35963) -> None:
 
 def main():
     """Main entry point with argument parsing."""
+    import os
+    import signal
+    from .tcp_server import TCPServer
+    
     parser = argparse.ArgumentParser(
         description='jcecard - Virtual OpenPGP Smart Card',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                    # Connect to vpcd on localhost:35963
-  %(prog)s --port 35964       # Use different port
+  %(prog)s                    # Start TCP server on port 9999
+  %(prog)s --port 9998        # Use different port
   %(prog)s -v                 # Verbose output
   %(prog)s -vv                # Debug output
 
 Prerequisites:
-  1. Install vpcd: sudo apt install vsmartcard-vpcd
+  1. Install ifd-jcecard: From source or tarball
   2. Restart pcscd: sudo systemctl restart pcscd
   3. Run this virtual card
   4. Use gpg --card-status to interact with the card
@@ -1468,15 +1472,22 @@ Prerequisites:
     
     parser.add_argument(
         '--host',
-        default='localhost',
-        help='vpcd host address (default: localhost)'
+        default='0.0.0.0',
+        help='Host to bind to (default: 0.0.0.0)'
     )
     
     parser.add_argument(
         '--port', '-p',
         type=int,
-        default=35963,
-        help='vpcd port number (default: 35963)'
+        default=9999,
+        help='TCP port number (default: 9999)'
+    )
+    
+    parser.add_argument(
+        '--storage',
+        type=str,
+        default=os.path.expanduser("~/.jcecard"),
+        help='Path for persistent card state storage directory'
     )
     
     parser.add_argument(
@@ -1496,7 +1507,27 @@ Prerequisites:
     else:
         logging.getLogger().setLevel(logging.WARNING)
     
-    run_card(host=args.host, port=args.port)
+    storage_path = Path(args.storage) if args.storage else None
+    
+    server = TCPServer(
+        host=args.host,
+        port=args.port,
+        storage_path=storage_path
+    )
+    
+    def signal_handler(sig, frame):
+        logger.info("Received signal, shutting down...")
+        server.stop()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        print(f"Starting jcecard virtual OpenPGP card server on {args.host}:{args.port}")
+        server.start()
+    except KeyboardInterrupt:
+        server.stop()
 
 
 if __name__ == '__main__':
