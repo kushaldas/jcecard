@@ -10,6 +10,8 @@
 //! - Receive response as: 4-byte big-endian length + data
 //! - Commands: "POWER_ON", "POWER_OFF", "RESET", "GET_ATR", or raw APDU bytes
 
+#![allow(dead_code)]
+
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::ffi::{c_char, c_uchar, c_ulong, CStr};
