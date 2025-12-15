@@ -7,7 +7,7 @@ Provides cryptographic operations using Python's cryptography library for:
 - Decryption (RSA PKCS#1 v1.5, X25519 ECDH)
 - Key fingerprint calculation
 
-This implementation uses only the cryptography library, no johnnycanencrypt dependency.
+This implementation uses only the cryptography library.
 """
 
 from __future__ import annotations

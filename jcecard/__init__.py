@@ -1,8 +1,8 @@
 """
 jcecard - Virtual OpenPGP Smart Card
 
-A virtual OpenPGP smart card implementation using johnnycanencrypt
-that connects to pcscd via vpcd.
+A virtual OpenPGP smart card implementation using cryptography
+that connects to pcscd via the TCP server on port 9000.
 """
 
 __version__ = "0.1.0"
@@ -26,12 +26,6 @@ from .tlv import (
     TLVBuilder,
     TLVError,
     OpenPGPTag,
-)
-
-from .vpcd_connection import (
-    VPCDConnection,
-    VPCDControl,
-    VPCDConnectionError,
 )
 
 from .atr import (
@@ -76,7 +70,6 @@ from .crypto_backend import (
 
 from .main import (
     OpenPGPCard,
-    run_card,
     main,
 )
 
@@ -115,11 +108,6 @@ __all__ = [
     "TLVError",
     "OpenPGPTag",
     
-    # vpcd
-    "VPCDConnection",
-    "VPCDControl",
-    "VPCDConnectionError",
-    
     # ATR
     "ATRBuilder",
     "DEFAULT_ATR",
@@ -157,7 +145,6 @@ __all__ = [
     
     # Main
     "OpenPGPCard",
-    "run_card",
     "main",
     
     # TCP Server

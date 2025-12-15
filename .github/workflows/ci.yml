@@ -11,36 +11,6 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-    
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          pcscd \
-          libpcsclite-dev \
-          libpcsclite1 \
-          pcsc-tools \
-          gnupg \
-          gnupg-agent \
-          scdaemon \
-          libclang-dev \
-          nettle-dev \
-          pkg-config \
-          build-essential
-
-    - name: Install yubico-piv-tool from kushal's build
-      run: |
-        wget https://kushaldas.in/yubico.tar.gz
-        echo "222b9deb97dcd2ad03f216ac42caea91bd875d6f3e838d3f4a9ab0d01c433c4c  yubico.tar.gz" | sha256sum -c -
-        tar xvf yubico.tar.gz
-        sudo apt install ./yubico/*.deb   
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-    
-    - name: Make just available for root
-      run: |
-        sudo ln -sf $(which just) /usr/local/bin/just
 
     - name: Install just
       uses: extractions/setup-just@v2
@@ -49,64 +19,42 @@ jobs:
       run: |
         sudo ln -sf $(which just) /usr/local/bin/just
     
+    - name: Install system dependencies
+      run: just ci-install-deps
+
+    - name: Install yubico-piv-tool from kushal's build
+      run: just ci-install-yubico
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+
+    
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
     
     - name: Create Python virtualenv and install dependencies
-      run: |
-        python -m venv .venv
-        source .venv/bin/activate
-        python -m pip install --upgrade pip
-        python -m pip install -e ".[dev]"
-        python -m pip install pexpect pyscard
+      run: just ci-setup-venv
 
     - name: Lint
       run: just lint
 
     - name: Build Rust IFD handler
-      run: |
-        cd ifd-jcecard
-        cargo build --release
+      run: just ci-build-ifd
 
     - name: Install IFD handler to pcscd
-      run: |
-        just install-ifd
+      run: just install-ifd
     
     - name: Configure gpg-agent for loopback pinentry
-      run: |
-        mkdir -p ~/.gnupg
-        chmod 700 ~/.gnupg
-        echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
-        echo "disable-ccid" >> ~/.gnupg/scdaemon.conf
-        gpgconf --kill all || true
+      run: just ci-gpg-loopback
     
     - name: Start TCP server and pcscd
-      run: |
-        source .venv/bin/activate
-        # Start TCP server in background
-        nohup python -m jcecard.tcp_server --debug > /tmp/tcp_server.log 2>&1 &
-        sleep 2
-        # Stop any existing pcscd first (ubuntu-latest has it running by default)
-        sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
-        sudo pkill -9 pcscd 2>/dev/null || true
-        sleep 1
-        # Start pcscd in debug mode with polkit disabled (required for CI)
-        # Ubuntu's pcscd 2.0+ uses polkit for authorization which blocks non-root users
-        sudo /usr/sbin/pcscd --foreground --debug --apdu --disable-polkit > /tmp/pcscd_debug.log 2>&1 &
-        sleep 5
-        # Verify services are running
-        pgrep -f tcp_server && echo "TCP server is running"
-        pgrep pcscd && echo "pcscd is running"
-        # Verify card is accessible via PC/SC
-        python -c "from smartcard.System import readers; r = readers(); print(f'Readers: {r}'); assert len(r) > 0, 'No readers found'"
+      run: just ci-start-services
     
     - name: Run tests
-      run: |
-        source .venv/bin/activate
-        # Run unit tests (excluding tests that need real card interaction via gpg)
-        timeout 600 pytest -vvv
+      run: just ci-test
     
     - name: Upload logs on failure
       uses: actions/upload-artifact@v4
