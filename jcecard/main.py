@@ -20,7 +20,6 @@ from .pin_manager import PINManager, PINRef, PINResult
 from .piv import PIVApplet, PIV_AID
 from .security_state import OperationAccess, SecurityState
 from .tlv import TLVEncoder, TLVParser
-from .vpcd_connection import VPCDConnection
 
 # Configure logging
 logging.basicConfig(
@@ -1412,38 +1411,6 @@ class OpenPGPCard:
         logger.info("Card activated - reset to factory defaults")
         return APDUResponse.success()
 
-
-def run_card(host: str = 'localhost', port: int = 35963) -> None:
-    """
-    Run the virtual OpenPGP card.
-    
-    Args:
-        host: vpcd host address
-        port: vpcd port number
-    """
-    card = OpenPGPCard()
-    connection = VPCDConnection(host=host, port=port)
-    
-    # Set up callbacks
-    connection.set_callbacks(
-        on_power_on=card.power_on,
-        on_power_off=card.power_off,
-        on_reset=card.reset,
-        on_atr_request=card.get_atr,
-        on_apdu=card.process_apdu
-    )
-    
-    logger.info(f"Starting virtual OpenPGP card, connecting to vpcd at {host}:{port}")
-    
-    try:
-        connection.run()
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user")
-    except ConnectionError as e:
-        logger.error(f"Connection error: {e}")
-        logger.info("Make sure vpcd is running. Install with: sudo apt install vsmartcard-vpcd")
-    finally:
-        connection.disconnect()
 
 
 def main():

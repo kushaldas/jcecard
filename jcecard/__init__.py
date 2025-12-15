@@ -70,7 +70,6 @@ from .crypto_backend import (
 
 from .main import (
     OpenPGPCard,
-    run_card,
     main,
 )
 
@@ -146,7 +145,6 @@ __all__ = [
     
     # Main
     "OpenPGPCard",
-    "run_card",
     "main",
     
     # TCP Server
