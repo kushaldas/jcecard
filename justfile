@@ -186,11 +186,37 @@ ci-setup-venv:
 ci-build-ifd: build-ifd
 
 # CI: Configure gpg-agent for loopback pinentry
-ci-gpg-loopback: gpg-loopback
+ci-gpg-loopback:
+    #!/usr/bin/env bash
+    set -e
+    mkdir -p ~/.gnupg
+    chmod 700 ~/.gnupg
+    echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+    echo "disable-ccid" >> ~/.gnupg/scdaemon.conf
+    gpgconf --kill all || true
 
 
 # CI: Start TCP server and pcscd
-ci-start-services: restart-all
+ci-start-services:
+    #!/usr/bin/env bash
+    set -e
+    source .venv/bin/activate
+    # Start TCP server in background
+    nohup python -m jcecard.tcp_server --debug > /tmp/tcp_server.log 2>&1 &
+    sleep 2
+    # Stop any existing pcscd first (ubuntu-latest has it running by default)
+    sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
+    sudo pkill -9 pcscd 2>/dev/null || true
+    sleep 1
+    # Start pcscd in debug mode with polkit disabled (required for CI)
+    # Ubuntu's pcscd 2.0+ uses polkit for authorization which blocks non-root users
+    sudo /usr/sbin/pcscd --foreground --debug --apdu --disable-polkit > /tmp/pcscd_debug.log 2>&1 &
+    sleep 5
+    # Verify services are running
+    pgrep -f tcp_server && echo "TCP server is running"
+    pgrep pcscd && echo "pcscd is running"
+    # Verify card is accessible via PC/SC
+    python -c "from smartcard.System import readers; r = readers(); print(f'Readers: {r}'); assert len(r) > 0, 'No readers found'"
 
 # CI: Run tests
 ci-test:
