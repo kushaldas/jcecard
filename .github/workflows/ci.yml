@@ -11,6 +11,13 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+
+    - name: Install just
+      uses: extractions/setup-just@v2
+
+    - name: Make just available for root
+      run: |
+        sudo ln -sf $(which just) /usr/local/bin/just
     
     - name: Install system dependencies
       run: just ci-install-deps
@@ -21,12 +28,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Install just
-      uses: extractions/setup-just@v2
 
-    - name: Make just available for root
-      run: |
-        sudo ln -sf $(which just) /usr/local/bin/just
     
     - name: Set up Python
       uses: actions/setup-python@v5
