@@ -28,12 +28,6 @@ from .tlv import (
     OpenPGPTag,
 )
 
-from .vpcd_connection import (
-    VPCDConnection,
-    VPCDControl,
-    VPCDConnectionError,
-)
-
 from .atr import (
     ATRBuilder,
     DEFAULT_ATR,
@@ -114,11 +108,6 @@ __all__ = [
     "TLVBuilder",
     "TLVError",
     "OpenPGPTag",
-    
-    # vpcd
-    "VPCDConnection",
-    "VPCDControl",
-    "VPCDConnectionError",
     
     # ATR
     "ATRBuilder",
