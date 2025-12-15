@@ -1,8 +1,8 @@
 """
 jcecard - Virtual OpenPGP Smart Card
 
-A virtual OpenPGP smart card implementation using johnnycanencrypt
-that connects to pcscd via vpcd.
+A virtual OpenPGP smart card implementation using cryptography
+that connects to pcscd via the TCP server on port 9000.
 """
 
 __version__ = "0.1.0"
