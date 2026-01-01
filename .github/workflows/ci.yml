@@ -7,7 +7,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -18,7 +18,7 @@ jobs:
     - name: Make just available for root
       run: |
         sudo ln -sf $(which just) /usr/local/bin/just
-    
+
     - name: Install system dependencies
       run: just ci-install-deps
 
@@ -28,40 +28,36 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
-
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
-    
-    - name: Create Python virtualenv and install dependencies
-      run: just ci-setup-venv
-
-    - name: Lint Python
-      run: just lint
-
     - name: Lint Rust
       run: cd ifd-jcecard && cargo clippy -- -D warnings
 
-    - name: Test Rust
+    - name: Test Rust unit tests
       run: just test-rust
 
-    - name: Build Rust IFD handler
+    - name: Build IFD handler
       run: just ci-build-ifd
 
     - name: Install IFD handler to pcscd
       run: just install-ifd
-    
+
+    # Python is used only for running integration tests
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Create Python virtualenv for tests
+      run: just ci-setup-venv
+
     - name: Configure gpg-agent for loopback pinentry
       run: just ci-gpg-loopback
-    
+
     - name: Start pcscd
       run: just ci-start-services
-    
-    - name: Run tests
+
+    - name: Run integration tests
       run: just ci-test
-    
+
     - name: Upload logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
