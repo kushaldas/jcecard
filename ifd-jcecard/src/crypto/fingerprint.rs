@@ -35,8 +35,8 @@ pub fn calculate_fingerprint_rsa(
     // Hash with prefix
     let packet_len = packet.len() as u16;
     let mut hasher = Sha1::new();
-    hasher.update(&[0x99]);
-    hasher.update(&packet_len.to_be_bytes());
+    hasher.update([0x99]);
+    hasher.update(packet_len.to_be_bytes());
     hasher.update(&packet);
 
     hasher.finalize().to_vec()
@@ -69,8 +69,8 @@ pub fn calculate_fingerprint_eddsa(
     // Hash with prefix
     let packet_len = packet.len() as u16;
     let mut hasher = Sha1::new();
-    hasher.update(&[0x99]);
-    hasher.update(&packet_len.to_be_bytes());
+    hasher.update([0x99]);
+    hasher.update(packet_len.to_be_bytes());
     hasher.update(&packet);
 
     hasher.finalize().to_vec()
@@ -109,8 +109,8 @@ pub fn calculate_fingerprint_ecdh_x25519(
     // Hash with prefix
     let packet_len = packet.len() as u16;
     let mut hasher = Sha1::new();
-    hasher.update(&[0x99]);
-    hasher.update(&packet_len.to_be_bytes());
+    hasher.update([0x99]);
+    hasher.update(packet_len.to_be_bytes());
     hasher.update(&packet);
 
     hasher.finalize().to_vec()
@@ -140,8 +140,8 @@ pub fn calculate_fingerprint_ecdsa(
     // Hash with prefix
     let packet_len = packet.len() as u16;
     let mut hasher = Sha1::new();
-    hasher.update(&[0x99]);
-    hasher.update(&packet_len.to_be_bytes());
+    hasher.update([0x99]);
+    hasher.update(packet_len.to_be_bytes());
     hasher.update(&packet);
 
     hasher.finalize().to_vec()

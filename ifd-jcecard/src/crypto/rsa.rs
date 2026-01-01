@@ -155,7 +155,7 @@ impl RsaOperations {
         let mut padded = Vec::with_capacity(key_size);
         padded.push(0x00);
         padded.push(0x01);
-        padded.extend(std::iter::repeat(0xFF).take(padding_len));
+        padded.extend(std::iter::repeat_n(0xFF, padding_len));
         padded.push(0x00);
         padded.extend_from_slice(digest_info);
 
@@ -186,7 +186,7 @@ impl RsaOperations {
         let signature = m.modpow(d, n);
 
         // Convert to bytes with proper padding to key size
-        let key_size = (private_key.size() + 7) / 8;
+        let key_size = private_key.size().div_ceil(8);
         let mut sig_bytes = signature.to_bytes_be();
 
         // Pad to key size if needed

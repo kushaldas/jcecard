@@ -6,7 +6,7 @@ use log::debug;
 
 use crate::apdu::{APDU, Response, SW, ins, pso};
 use crate::card::{CardState, CardDataStore, AlgorithmID};
-use crate::tlv::{TLV, TLVBuilder, read_list};
+use crate::tlv::{TLVBuilder, read_list};
 use crate::crypto::ed25519::Ed25519Operations;
 use crate::crypto::x25519::X25519Operations;
 use crate::crypto::rsa::RsaOperations;
@@ -639,17 +639,17 @@ impl OpenPGPApplet {
 
             // UIF
             0x00D6 => {
-                if cmd.data.len() >= 1 {
+                if !cmd.data.is_empty() {
                     state.key_sig.uif = cmd.data[0];
                 }
             }
             0x00D7 => {
-                if cmd.data.len() >= 1 {
+                if !cmd.data.is_empty() {
                     state.key_dec.uif = cmd.data[0];
                 }
             }
             0x00D8 => {
-                if cmd.data.len() >= 1 {
+                if !cmd.data.is_empty() {
                     state.key_aut.uif = cmd.data[0];
                 }
             }
@@ -1355,7 +1355,7 @@ impl OpenPGPApplet {
 
             // Private DOs - readable without PIN (write still requires PIN)
             // This matches real Yubikey behavior for empty DOs during LEARN
-            0x0101 | 0x0102 | 0x0103 | 0x0104 => AccessCondition::Always,
+            0x0101..=0x0104 => AccessCondition::Always,
 
             // Certificate - always
             0x7F21 => AccessCondition::Always,
@@ -1371,17 +1371,16 @@ impl OpenPGPApplet {
             0x005B | 0x5F2D | 0x5F35 | 0x005E | 0x5F50 => AccessCondition::PW3,
 
             // Algorithm attributes - require PW3
-            0x00C1 | 0x00C2 | 0x00C3 => AccessCondition::PW3,
+            0x00C1..=0x00C3 => AccessCondition::PW3,
 
             // PW status bytes - require PW3
             0x00C4 => AccessCondition::PW3,
 
             // Fingerprints - require PW3
-            0x00C7 | 0x00C8 | 0x00C9 |
-            0x00CA | 0x00CB | 0x00CC => AccessCondition::PW3,
+            0x00C7..=0x00CC => AccessCondition::PW3,
 
             // Timestamps - require PW3
-            0x00CE | 0x00CF | 0x00D0 => AccessCondition::PW3,
+            0x00CE..=0x00D0 => AccessCondition::PW3,
 
             // Private DOs 1-2 require PW1, 3-4 require PW3
             0x0101 | 0x0102 => AccessCondition::PW1Any,

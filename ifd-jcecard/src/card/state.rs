@@ -3,7 +3,6 @@
 //! These structures match the Python JSON format for backward compatibility.
 
 use serde::{Deserialize, Serialize};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 /// Custom serde module for base64 encoding of byte vectors
 mod base64_bytes {

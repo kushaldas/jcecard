@@ -8,6 +8,10 @@
 //! - PIV card specification (NIST SP 800-73-4)
 
 #![allow(dead_code)]
+// Allow raw pointer dereference in extern "C" functions - required for PC/SC IFD API
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+// Allow uppercase acronyms for Windows API type names (DWORD, LPSTR, etc.)
+#![allow(clippy::upper_case_acronyms)]
 
 // Core modules
 pub mod apdu;

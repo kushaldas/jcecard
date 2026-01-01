@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use sha2::{Sha256, Digest};
 use log::{info, warn, debug};
 
-use super::state::{CardState, PINData};
+use super::state::CardState;
 
 /// Handles persistent storage of card state
 pub struct CardDataStore {

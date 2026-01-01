@@ -2,7 +2,7 @@
 //!
 //! Ed25519 key generation and signing using ed25519-dalek.
 
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer};
+use ed25519_dalek::{SigningKey, Signature, Signer};
 use rand::rngs::OsRng;
 use log::debug;
 

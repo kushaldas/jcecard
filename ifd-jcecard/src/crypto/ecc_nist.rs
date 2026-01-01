@@ -3,11 +3,8 @@
 //! ECDSA signing and ECDH using p256 and p384 crates.
 
 use p256::ecdsa::{SigningKey as P256SigningKey, Signature as P256Signature};
-use p256::ecdh::EphemeralSecret as P256EphemeralSecret;
 use p384::ecdsa::{SigningKey as P384SigningKey, Signature as P384Signature};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::ecdsa::signature::Signer;
-use p384::ecdsa::signature::Signer as P384Signer;
 use rand::rngs::OsRng;
 use log::debug;
 

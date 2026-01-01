@@ -211,7 +211,6 @@ impl Default for PINManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::card::storage::CardDataStore;
 
     fn create_test_pin_data() -> PINData {
         let mut pin_data = PINData::default();

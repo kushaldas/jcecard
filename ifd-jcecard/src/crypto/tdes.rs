@@ -72,7 +72,7 @@ impl TDesOperations {
                 format!("Invalid key length: expected {}, got {}", Self::KEY_SIZE, key.len())
             ));
         }
-        if plaintext.len() % Self::BLOCK_SIZE != 0 {
+        if !plaintext.len().is_multiple_of(Self::BLOCK_SIZE) {
             return Err(TDesError::InvalidData(
                 format!("Data length {} is not a multiple of block size {}",
                         plaintext.len(), Self::BLOCK_SIZE)
@@ -100,7 +100,7 @@ impl TDesOperations {
                 format!("Invalid key length: expected {}, got {}", Self::KEY_SIZE, key.len())
             ));
         }
-        if ciphertext.len() % Self::BLOCK_SIZE != 0 {
+        if !ciphertext.len().is_multiple_of(Self::BLOCK_SIZE) {
             return Err(TDesError::InvalidData(
                 format!("Data length {} is not a multiple of block size {}",
                         ciphertext.len(), Self::BLOCK_SIZE)
