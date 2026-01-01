@@ -38,8 +38,14 @@ jobs:
     - name: Create Python virtualenv and install dependencies
       run: just ci-setup-venv
 
-    - name: Lint
+    - name: Lint Python
       run: just lint
+
+    - name: Lint Rust
+      run: cd ifd-jcecard && cargo clippy -- -D warnings
+
+    - name: Test Rust
+      run: just test-rust
 
     - name: Build Rust IFD handler
       run: just ci-build-ifd
@@ -50,17 +56,16 @@ jobs:
     - name: Configure gpg-agent for loopback pinentry
       run: just ci-gpg-loopback
     
-    - name: Start TCP server and pcscd
+    - name: Start pcscd
       run: just ci-start-services
     
     - name: Run tests
       run: just ci-test
     
     - name: Upload logs on failure
+      if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: debug-logs
-        path: |
-          /tmp/tcp_server.log
-          /tmp/pcscd_debug.log
+        path: /tmp/pcscd_debug.log
         retention-days: 1

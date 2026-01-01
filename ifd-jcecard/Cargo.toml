@@ -21,9 +21,46 @@ name = "ifd-jcecard-install"
 path = "src/bin/ifd-jcecard-install.rs"
 
 [dependencies]
+# Synchronization
 once_cell = "1.19"
 parking_lot = "0.12"
+
+# Logging
 log = "0.4"
 env_logger = "0.11"
-lazy_static = "1.4"
+
+# FFI
 libc = "0.2"
+
+# Serialization (for JSON storage)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+
+# Cryptography - RustCrypto ecosystem
+rsa = { version = "0.9", features = ["std"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+p256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
+p384 = { version = "0.13", features = ["ecdsa", "ecdh"] }
+des = "0.8"
+sha1 = "0.10"
+sha2 = "0.10"
+digest = "0.10"
+rand = "0.8"
+rand_core = "0.6"
+
+# Error handling
+thiserror = "1.0"
+
+# Directory management
+dirs = "5.0"
+
+[dev-dependencies]
+hex = "0.4"
+tempfile = "3.10"
+
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true

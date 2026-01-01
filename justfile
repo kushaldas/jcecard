@@ -72,28 +72,19 @@ uninstall-ifd:
     
     echo "IFD handler uninstalled successfully"
 
-# Restart the TCP server
-restart-tcp: && restart-pcscd
-    #!/usr/bin/env bash
-    pkill -f "python -m jcecard.tcp_server" 2>/dev/null || true
-    sleep 1
-    source .venv/bin/activate
-    nohup python -m jcecard.tcp_server --debug > /tmp/tcp_server.log 2>&1 &
-    sleep 2
-    pgrep -f tcp_server && echo "TCP server restarted successfully"
-
 # Restart pcscd in debug mode
 restart-pcscd:
     #!/usr/bin/env bash
     sudo pkill -9 pcscd 2>/dev/null || true
     sleep 1
-    # Start pcscd and redirect all output to log file (no STDOUT)
-    sudo /usr/sbin/pcscd --foreground --debug --apdu > /tmp/pcscd_debug.log 2>&1 &
+    # Start pcscd with JCECARD_STORAGE_DIR set to user's home
+    # (pcscd runs as root but we want state in user's home directory)
+    sudo JCECARD_STORAGE_DIR="$HOME/.jcecard" /usr/sbin/pcscd --foreground --debug --apdu > /tmp/pcscd_debug.log 2>&1 &
     sleep 2
     echo "pcscd started in debug mode, logging to /tmp/pcscd_debug.log"
 
-# Restart both services
-restart-all: restart-tcp restart-pcscd
+# Restart pcscd (alias for restart-pcscd)
+restart-all: restart-pcscd
 
 # Run RSA signing tests
 test-rsa-sign:
@@ -103,14 +94,10 @@ test-rsa-sign:
 test-rsa:
     source .venv/bin/activate && timeout 300 pytest tests/test_smartcard_crypto.py::TestSmartcardRSAOperations -xvs
 
-# Check if services are running
+# Check if pcscd is running
 status:
-    @echo "TCP Server:"
-    @pgrep -f tcp_server && echo "  Running" || echo "  Not running"
     @echo "pcscd:"
     @pgrep pcscd && echo "  Running" || echo "  Not running"
-    @echo "Port 9999:"
-    @nc -z localhost 9999 && echo "  Open" || echo "  Closed"
 
 # CI: Install ifd from kushal's build for speedup
 install-prbuilt-ifd:
@@ -122,8 +109,8 @@ install-prbuilt-ifd:
     cd ifd-jcecard
     sudo ./install.sh
 
-# Full rebuild: build IFD, install, and restart all services
-rebuild: install-ifd restart-all
+# Full rebuild: build IFD, install, and restart pcscd
+rebuild: install-ifd restart-pcscd
     @echo "Full rebuild complete"
 
 # Check linting with ty & ruff
@@ -182,6 +169,10 @@ ci-setup-venv:
     python -m pip install -e ".[dev]"
     python -m pip install pexpect pyscard
 
+# Run Rust unit tests
+test-rust:
+    cd ifd-jcecard && cargo test
+
 # CI: Build Rust IFD handler
 ci-build-ifd: build-ifd
 
@@ -196,24 +187,21 @@ ci-gpg-loopback:
     gpgconf --kill all || true
 
 
-# CI: Start TCP server and pcscd
+# CI: Start pcscd (virtual card is embedded in IFD handler)
 ci-start-services:
     #!/usr/bin/env bash
     set -e
     source .venv/bin/activate
-    # Start TCP server in background
-    nohup python -m jcecard.tcp_server --debug > /tmp/tcp_server.log 2>&1 &
-    sleep 2
     # Stop any existing pcscd first (ubuntu-latest has it running by default)
     sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
     sudo pkill -9 pcscd 2>/dev/null || true
     sleep 1
     # Start pcscd in debug mode with polkit disabled (required for CI)
     # Ubuntu's pcscd 2.0+ uses polkit for authorization which blocks non-root users
-    sudo /usr/sbin/pcscd --foreground --debug --apdu --disable-polkit > /tmp/pcscd_debug.log 2>&1 &
+    # Set JCECARD_STORAGE_DIR to user's home for state persistence
+    sudo JCECARD_STORAGE_DIR="$HOME/.jcecard" /usr/sbin/pcscd --foreground --debug --apdu --disable-polkit > /tmp/pcscd_debug.log 2>&1 &
     sleep 5
-    # Verify services are running
-    pgrep -f tcp_server && echo "TCP server is running"
+    # Verify pcscd is running
     pgrep pcscd && echo "pcscd is running"
     # Verify card is accessible via PC/SC
     python -c "from smartcard.System import readers; r = readers(); print(f'Readers: {r}'); assert len(r) > 0, 'No readers found'"

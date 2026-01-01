@@ -1,25 +1,34 @@
-//! IFD Handler for jcecard virtual OpenPGP card
+//! IFD Handler for jcecard virtual OpenPGP/PIV card
 //!
 //! This is a PC/SC IFD (Interface Device) handler that implements a virtual
-//! smart card reader. It communicates with a jcecard TCP server running on
-//! port 9999 for the actual card logic.
+//! smart card reader with embedded OpenPGP and PIV applets.
 //!
-//! Protocol:
-//! - Connect to localhost:9999
-//! - Send command as: 4-byte big-endian length + data
-//! - Receive response as: 4-byte big-endian length + data
-//! - Commands: "POWER_ON", "POWER_OFF", "RESET", "GET_ATR", or raw APDU bytes
+//! The virtual card supports:
+//! - OpenPGP card specification (ISO/IEC 7816-4/8)
+//! - PIV card specification (NIST SP 800-73-4)
 
 #![allow(dead_code)]
+
+// Core modules
+pub mod apdu;
+pub mod tlv;
+pub mod card;
+pub mod crypto;
+pub mod openpgp;
+pub mod piv;
 
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::ffi::{c_char, c_uchar, c_ulong, CStr};
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::ptr;
 use std::sync::Arc;
-use std::time::Duration;
+use log::{debug, info, error};
+
+use apdu::{parse_apdu, Response};
+use card::{atr, CardDataStore};
+use openpgp::OpenPGPApplet;
+use openpgp::applet::OPENPGP_AID_PREFIX;
+use piv::{PIVApplet, applet::PIV_AID};
 
 // PC/SC lite types
 type DWORD = c_ulong;
@@ -59,140 +68,201 @@ pub struct SCARD_IO_HEADER {
 // Maximum ATR size
 const MAX_ATR_SIZE: usize = 33;
 
-// Server address
-const SERVER_ADDR: &str = "127.0.0.1:9999";
+/// Active applet in the virtual card
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveApplet {
+    None,
+    OpenPGP,
+    PIV,
+}
 
-/// Holds the card state
-struct CardState {
-    /// TCP connection to jcecard server
-    stream: Option<TcpStream>,
-    /// Current ATR
+/// Virtual card containing both OpenPGP and PIV applets
+struct VirtualCard {
+    /// OpenPGP applet
+    openpgp: OpenPGPApplet,
+    /// PIV applet
+    piv: PIVApplet,
+    /// Currently active applet
+    active_applet: ActiveApplet,
+    /// Card ATR
     atr: Vec<u8>,
     /// Whether the card is powered
     powered: bool,
 }
 
-// Message types for protocol
-const MSG_APDU: u8 = 0x01;
-const MSG_POWER_ON: u8 = 0x02;
-const MSG_POWER_OFF: u8 = 0x03;
-const MSG_RESET: u8 = 0x04;
-const MSG_GET_ATR: u8 = 0x05;
-const MSG_PRESENCE: u8 = 0x06;
-
-// Response status
-const STATUS_OK: u8 = 0x00;
-const STATUS_ERROR: u8 = 0x01;
-const STATUS_NO_CARD: u8 = 0x02;
-
-impl CardState {
+impl VirtualCard {
+    /// Create a new virtual card
     fn new() -> Self {
+        // Create and load CardDataStore for OpenPGP applet
+        let mut store = CardDataStore::new(None);
+        store.load();  // Load existing state or initialize defaults
         Self {
-            stream: None,
-            atr: Vec::new(),
+            openpgp: OpenPGPApplet::new(store),
+            piv: PIVApplet::new(),
+            active_applet: ActiveApplet::None,
+            atr: atr::create_openpgp_atr(),
             powered: false,
         }
     }
 
-    /// Connect to the jcecard server
-    fn connect(&mut self) -> Result<(), String> {
-        if self.stream.is_some() {
-            return Ok(());
-        }
-
-        match TcpStream::connect(SERVER_ADDR) {
-            Ok(stream) => {
-                stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
-                stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
-                self.stream = Some(stream);
-                Ok(())
-            }
-            Err(e) => Err(format!("Failed to connect to {}: {}", SERVER_ADDR, e)),
-        }
-    }
-
-    /// Disconnect from the server
-    fn disconnect(&mut self) {
-        self.stream = None;
-        self.powered = false;
-        self.atr.clear();
-    }
-
-    /// Send a command and receive response
-    fn send_command(&mut self, cmd: &[u8]) -> Result<Vec<u8>, String> {
-        let stream = self.stream.as_mut().ok_or("Not connected")?;
-
-        // Send length (4 bytes big-endian) + data
-        let len = cmd.len() as u32;
-        let len_bytes = len.to_be_bytes();
-        
-        stream.write_all(&len_bytes).map_err(|e| format!("Write length error: {}", e))?;
-        stream.write_all(cmd).map_err(|e| format!("Write data error: {}", e))?;
-        stream.flush().map_err(|e| format!("Flush error: {}", e))?;
-
-        // Read response length
-        let mut resp_len_bytes = [0u8; 4];
-        stream.read_exact(&mut resp_len_bytes).map_err(|e| format!("Read length error: {}", e))?;
-        let resp_len = u32::from_be_bytes(resp_len_bytes) as usize;
-
-        // Read response data
-        let mut response = vec![0u8; resp_len];
-        stream.read_exact(&mut response).map_err(|e| format!("Read data error: {}", e))?;
-
-        Ok(response)
-    }
-
     /// Power on the card
-    fn power_on(&mut self) -> Result<Vec<u8>, String> {
-        self.connect()?;
-        let response = self.send_command(&[MSG_POWER_ON])?;
-        if response.is_empty() || response[0] != STATUS_OK {
-            return Err(format!("Power on failed: {:?}", response));
-        }
-        // ATR is the rest of the response after the status byte
-        self.atr = response[1..].to_vec();
+    fn power_on(&mut self) -> Vec<u8> {
         self.powered = true;
-        Ok(self.atr.clone())
+        self.active_applet = ActiveApplet::None;
+        info!("Virtual card powered on");
+        self.atr.clone()
     }
 
     /// Power off the card
-    fn power_off(&mut self) -> Result<(), String> {
-        if self.stream.is_some() {
-            let _ = self.send_command(&[MSG_POWER_OFF]);
-        }
+    fn power_off(&mut self) {
         self.powered = false;
-        Ok(())
+        self.active_applet = ActiveApplet::None;
+        self.openpgp.reset();
+        self.piv.reset();
+        info!("Virtual card powered off");
     }
 
     /// Reset the card
-    fn reset(&mut self) -> Result<Vec<u8>, String> {
-        self.connect()?;
-        let response = self.send_command(&[MSG_RESET])?;
-        if response.is_empty() || response[0] != STATUS_OK {
-            return Err(format!("Reset failed: {:?}", response));
-        }
-        // ATR is the rest of the response after the status byte
-        self.atr = response[1..].to_vec();
+    fn reset(&mut self) -> Vec<u8> {
+        self.openpgp.reset();
+        self.piv.reset();
+        self.active_applet = ActiveApplet::None;
         self.powered = true;
-        Ok(self.atr.clone())
+        info!("Virtual card reset");
+        self.atr.clone()
+    }
+
+    /// Process an APDU command
+    fn process_apdu(&mut self, apdu_bytes: &[u8]) -> Vec<u8> {
+        if !self.powered {
+            // Return SW 6985 (Conditions not satisfied)
+            return vec![0x69, 0x85];
+        }
+
+        // Parse APDU
+        let cmd = match parse_apdu(apdu_bytes) {
+            Ok(apdu) => apdu,
+            Err(e) => {
+                error!("Failed to parse APDU: {:?}", e);
+                // Return SW 6700 (Wrong length)
+                return vec![0x67, 0x00];
+            }
+        };
+
+        debug!("Processing APDU: CLA={:02X} INS={:02X} P1={:02X} P2={:02X}",
+               cmd.cla, cmd.ins, cmd.p1, cmd.p2);
+
+        // Check for SELECT command
+        if cmd.ins == 0xA4 {
+            if cmd.p1 == 0x04 {
+                // SELECT by DF name (AID) - route to applet selection
+                return self.handle_select(&cmd);
+            } else {
+                // SELECT MF (P1=0x00) or other SELECT variants not supported
+                // Real Yubikey returns INS_NOT_SUPPORTED for these
+                return vec![0x6D, 0x00];
+            }
+        }
+
+        // Route to active applet
+        let response = match self.active_applet {
+            ActiveApplet::OpenPGP => self.openpgp.process_apdu(&cmd),
+            ActiveApplet::PIV => self.piv.process_apdu(&cmd),
+            ActiveApplet::None => {
+                // No applet selected - return SW 6985 (Conditions not satisfied)
+                Response::error(apdu::SW::CONDITIONS_NOT_SATISFIED)
+            }
+        };
+
+        // Convert response to bytes
+        self.response_to_bytes(&response)
+    }
+
+    /// Handle SELECT command for applet routing
+    fn handle_select(&mut self, cmd: &apdu::APDU) -> Vec<u8> {
+        // Check if it's OpenPGP AID
+        if cmd.data.starts_with(OPENPGP_AID_PREFIX) {
+            self.active_applet = ActiveApplet::OpenPGP;
+            info!("Selected OpenPGP applet");
+            let response = self.openpgp.process_apdu(cmd);
+            return self.response_to_bytes(&response);
+        }
+
+        // Check if it's PIV AID
+        if cmd.data.starts_with(PIV_AID) {
+            self.active_applet = ActiveApplet::PIV;
+            info!("Selected PIV applet");
+            let response = self.piv.process_apdu(cmd);
+            return self.response_to_bytes(&response);
+        }
+
+        // Check if it's Yubikey Management AID (A0 00 00 05 27 47 11 17)
+        // scdaemon queries this to get firmware version
+        const YUBIKEY_MGMT_AID: &[u8] = &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x47, 0x11, 0x17];
+        if cmd.data == YUBIKEY_MGMT_AID {
+            info!("Selected Yubikey Management applet (returning version string)");
+            // Return "jcecard - FW version 1.0.0" like real Yubikey
+            let mut response: Vec<u8> = b"jcecard - FW version 1.0.0".to_vec();
+            response.push(0x90);
+            response.push(0x00);
+            return response;
+        }
+
+        // Unknown AID - return SW 6A82 (File not found)
+        debug!("Unknown AID: {:02X?}", cmd.data);
+        vec![0x6A, 0x82]
+    }
+
+    /// Convert Response to raw bytes (data + SW1 + SW2)
+    fn response_to_bytes(&self, response: &Response) -> Vec<u8> {
+        let mut result = response.data.clone();
+        result.push(response.sw1);
+        result.push(response.sw2);
+        result
+    }
+}
+
+/// Holds the card state
+struct CardState {
+    /// Virtual card
+    virtual_card: VirtualCard,
+}
+
+impl CardState {
+    fn new() -> Self {
+        Self {
+            virtual_card: VirtualCard::new(),
+        }
+    }
+
+    /// Power on the card
+    fn power_on(&mut self) -> Vec<u8> {
+        self.virtual_card.power_on()
+    }
+
+    /// Power off the card
+    fn power_off(&mut self) {
+        self.virtual_card.power_off()
+    }
+
+    /// Reset the card
+    fn reset(&mut self) -> Vec<u8> {
+        self.virtual_card.reset()
     }
 
     /// Send APDU and get response
-    fn transmit_apdu(&mut self, apdu: &[u8]) -> Result<Vec<u8>, String> {
-        if !self.powered {
-            return Err("Card not powered".to_string());
-        }
-        // Prepend message type
-        let mut cmd = Vec::with_capacity(apdu.len() + 1);
-        cmd.push(MSG_APDU);
-        cmd.extend_from_slice(apdu);
-        
-        let response = self.send_command(&cmd)?;
-        if response.is_empty() || response[0] != STATUS_OK {
-            return Err(format!("APDU failed: {:?}", response));
-        }
-        // Return response data without status byte
-        Ok(response[1..].to_vec())
+    fn transmit_apdu(&mut self, apdu: &[u8]) -> Vec<u8> {
+        self.virtual_card.process_apdu(apdu)
+    }
+
+    /// Check if powered
+    fn is_powered(&self) -> bool {
+        self.virtual_card.powered
+    }
+
+    /// Get ATR
+    fn get_atr(&self) -> &[u8] {
+        &self.virtual_card.atr
     }
 }
 
@@ -249,11 +319,11 @@ pub extern "C" fn IFDHCreateChannelByName(lun: DWORD, device_name: LPSTR) -> RES
         return IFD_COMMUNICATION_ERROR;
     }
 
-    // Create card state (connection will be established on power-on)
+    // Create card state with embedded virtual card
     let card_state = CardState::new();
     state.slots[slot] = Some(Arc::new(Mutex::new(card_state)));
 
-    log_info("Channel created successfully");
+    log_info("Channel created successfully (embedded virtual card)");
     IFD_SUCCESS
 }
 
@@ -261,7 +331,7 @@ pub extern "C" fn IFDHCreateChannelByName(lun: DWORD, device_name: LPSTR) -> RES
 #[no_mangle]
 pub extern "C" fn IFDHCreateChannel(lun: DWORD, channel: DWORD) -> RESPONSECODE {
     log_info(&format!("IFDHCreateChannel: LUN={}, channel={}", lun, channel));
-    
+
     let mut state = get_state().lock();
     let slot = (lun & 0xFFFF) as usize;
 
@@ -273,7 +343,7 @@ pub extern "C" fn IFDHCreateChannel(lun: DWORD, channel: DWORD) -> RESPONSECODE 
     let card_state = CardState::new();
     state.slots[slot] = Some(Arc::new(Mutex::new(card_state)));
 
-    log_info("Channel created successfully");
+    log_info("Channel created successfully (embedded virtual card)");
     IFD_SUCCESS
 }
 
@@ -291,7 +361,7 @@ pub extern "C" fn IFDHCloseChannel(lun: DWORD) -> RESPONSECODE {
 
     if let Some(card_state) = state.slots[slot].take() {
         let mut cs = card_state.lock();
-        cs.disconnect();
+        cs.power_off();
     }
 
     IFD_SUCCESS
@@ -322,12 +392,13 @@ pub extern "C" fn IFDHGetCapabilities(
 
             if let Some(ref card_arc) = state.slots[slot] {
                 let card = card_arc.lock();
-                if card.powered && !card.atr.is_empty() {
-                    let atr_len = card.atr.len().min(MAX_ATR_SIZE);
+                if card.is_powered() {
+                    let atr = card.get_atr();
+                    let atr_len = atr.len().min(MAX_ATR_SIZE);
                     unsafe {
                         *length = atr_len as DWORD;
                         if !value.is_null() {
-                            ptr::copy_nonoverlapping(card.atr.as_ptr(), value, atr_len);
+                            ptr::copy_nonoverlapping(atr.as_ptr(), value, atr_len);
                         }
                     }
                     return IFD_SUCCESS;
@@ -424,54 +495,35 @@ pub extern "C" fn IFDHPowerICC(
 
     match action {
         IFD_POWER_UP => {
-            log_info("Powering up card");
-            match card.power_on() {
-                Ok(card_atr) => {
-                    log_info(&format!("Card powered on, ATR length: {}", card_atr.len()));
-                    if !atr.is_null() && !atr_length.is_null() {
-                        let copy_len = card_atr.len().min(MAX_ATR_SIZE);
-                        unsafe {
-                            ptr::copy_nonoverlapping(card_atr.as_ptr(), atr, copy_len);
-                            *atr_length = copy_len as DWORD;
-                        }
-                    }
-                    IFD_SUCCESS
-                }
-                Err(e) => {
-                    log_error(&format!("Power on failed: {}", e));
-                    IFD_COMMUNICATION_ERROR
+            log_info("Powering up virtual card");
+            let card_atr = card.power_on();
+            log_info(&format!("Card powered on, ATR length: {}", card_atr.len()));
+            if !atr.is_null() && !atr_length.is_null() {
+                let copy_len = card_atr.len().min(MAX_ATR_SIZE);
+                unsafe {
+                    ptr::copy_nonoverlapping(card_atr.as_ptr(), atr, copy_len);
+                    *atr_length = copy_len as DWORD;
                 }
             }
+            IFD_SUCCESS
         }
         IFD_POWER_DOWN => {
-            log_info("Powering down card");
-            match card.power_off() {
-                Ok(()) => IFD_SUCCESS,
-                Err(e) => {
-                    log_error(&format!("Power off failed: {}", e));
-                    IFD_COMMUNICATION_ERROR
-                }
-            }
+            log_info("Powering down virtual card");
+            card.power_off();
+            IFD_SUCCESS
         }
         IFD_RESET => {
-            log_info("Resetting card");
-            match card.reset() {
-                Ok(card_atr) => {
-                    log_info(&format!("Card reset, ATR length: {}", card_atr.len()));
-                    if !atr.is_null() && !atr_length.is_null() {
-                        let copy_len = card_atr.len().min(MAX_ATR_SIZE);
-                        unsafe {
-                            ptr::copy_nonoverlapping(card_atr.as_ptr(), atr, copy_len);
-                            *atr_length = copy_len as DWORD;
-                        }
-                    }
-                    IFD_SUCCESS
-                }
-                Err(e) => {
-                    log_error(&format!("Reset failed: {}", e));
-                    IFD_COMMUNICATION_ERROR
+            log_info("Resetting virtual card");
+            let card_atr = card.reset();
+            log_info(&format!("Card reset, ATR length: {}", card_atr.len()));
+            if !atr.is_null() && !atr_length.is_null() {
+                let copy_len = card_atr.len().min(MAX_ATR_SIZE);
+                unsafe {
+                    ptr::copy_nonoverlapping(card_atr.as_ptr(), atr, copy_len);
+                    *atr_length = copy_len as DWORD;
                 }
             }
+            IFD_SUCCESS
         }
         _ => {
             log_error(&format!("Unknown power action: {}", action));
@@ -518,30 +570,16 @@ pub extern "C" fn IFDHTransmitToICC(
     log_info(&format!("APDU: {:02X?}", apdu));
 
     let mut card = card_arc.lock();
-    match card.transmit_apdu(apdu) {
-        Ok(response) => {
-            log_info(&format!("Response: {:02X?}", response));
-            let max_len = unsafe { *rx_length } as usize;
-            let copy_len = response.len().min(max_len);
-            unsafe {
-                ptr::copy_nonoverlapping(response.as_ptr(), rx_buffer, copy_len);
-                *rx_length = copy_len as DWORD;
-            }
-            IFD_SUCCESS
-        }
-        Err(e) => {
-            log_error(&format!("Transmit failed: {}", e));
-            // Return SW 6F00 (general error)
-            unsafe {
-                if *rx_length >= 2 {
-                    *rx_buffer = 0x6F;
-                    *rx_buffer.add(1) = 0x00;
-                    *rx_length = 2;
-                }
-            }
-            IFD_SUCCESS // Return success so pcscd processes the error SW
-        }
+    let response = card.transmit_apdu(apdu);
+
+    log_info(&format!("Response: {:02X?}", response));
+    let max_len = unsafe { *rx_length } as usize;
+    let copy_len = response.len().min(max_len);
+    unsafe {
+        ptr::copy_nonoverlapping(response.as_ptr(), rx_buffer, copy_len);
+        *rx_length = copy_len as DWORD;
     }
+    IFD_SUCCESS
 }
 
 /// Check if ICC is present
@@ -554,19 +592,9 @@ pub extern "C" fn IFDHICCPresence(lun: DWORD) -> RESPONSECODE {
         return IFD_ICC_NOT_PRESENT;
     }
 
-    // Try to connect to server to check if card is present
-    if let Some(ref card_arc) = state.slots[slot] {
-        let mut card = card_arc.lock();
-        
-        // If already connected and powered, card is present
-        if card.powered {
-            return IFD_ICC_PRESENT;
-        }
-        
-        // Try to connect
-        if card.connect().is_ok() {
-            return IFD_ICC_PRESENT;
-        }
+    // Virtual card is always present
+    if state.slots[slot].is_some() {
+        return IFD_ICC_PRESENT;
     }
 
     IFD_ICC_NOT_PRESENT
