@@ -14,29 +14,37 @@ package-ifd: build-ifd
     set -e
     STAGING_DIR=$(mktemp -d)
     PKG_DIR="$STAGING_DIR/ifd-jcecard"
-    mkdir -p "$PKG_DIR/bundle"
-    
+    mkdir -p "$PKG_DIR"
+
     # Copy the built library
     cp ifd-jcecard/target/release/libifd_jcecard.so "$PKG_DIR/"
-    
-    # Copy bundle configuration files
-    cp -r ifd-jcecard/bundle/ifd-jcecard.bundle "$PKG_DIR/bundle/"
-    cp ifd-jcecard/bundle/jcecard.conf "$PKG_DIR/bundle/"
-    
-    # Copy install script
-    cp ifd-jcecard/install.sh "$PKG_DIR/"
-    chmod +x "$PKG_DIR/install.sh"
-    
+
+    # Copy bundle configuration files (flattened structure for easy install)
+    cp ifd-jcecard/bundle/ifd-jcecard.bundle/Contents/Info.plist "$PKG_DIR/"
+    cp ifd-jcecard/bundle/jcecard.conf "$PKG_DIR/"
+
+    # Copy install and startup scripts
+    cp scripts/install-jcecard.sh "$PKG_DIR/"
+    cp scripts/start-pcscd-debug.sh "$PKG_DIR/"
+    chmod +x "$PKG_DIR/install-jcecard.sh"
+    chmod +x "$PKG_DIR/start-pcscd-debug.sh"
+
     # Create tarball
     tar -C "$STAGING_DIR" -czvf ifd-jcecard.tar.gz ifd-jcecard
-    
+
     # Print sha256sum
     echo ""
     echo "Package created: ifd-jcecard.tar.gz"
     sha256sum ifd-jcecard.tar.gz
-    
+
     # Cleanup
     rm -rf "$STAGING_DIR"
+
+    echo ""
+    echo "To install on target system:"
+    echo "  tar xzf ifd-jcecard.tar.gz"
+    echo "  cd ifd-jcecard"
+    echo "  sudo ./install-jcecard.sh"
 
 # Install the IFD handler to pcscd drivers directory
 install-ifd: build-ifd

@@ -1,22 +1,27 @@
 # jcecard
 
-A virtual OpenPGP smart card implementation that connects to pcscd via local
-TCP server, made for testing
+A virtual OpenPGP and PIV smart card implementation for testing
 [johnnycanencrypt](https://github.com/kushaldas/johnnycanencrypt) and related
-desktop applications.
+desktop applications. The virtual card is embedded in a PC/SC IFD handler
+that pcscd loads directly - no external server required.
 
 
 ## Available/tested features for OpenPGP
 
-- Import RSA4096 and CV25519 keys/subkeys
-- Signing operation
-- Encryption / decryption operation
-- On card CV25519 generation
-- On card RSA4096 key generaion
+### Key Types Supported
+- **RSA**: 2048, 3072, 4096 bits
+- **Curve25519**: Ed25519 (signing), X25519 (decryption)
+- **NIST curves**: P-256, P-384 (ECDSA signing, ECDH decryption)
+- **secp256k1**: ECDSA signing, ECDH decryption
 
-## Written but not tested yet in OpenPGP
-
-- Authention (for SSH)
+### Operations
+- On-card key generation for all supported algorithms
+- Key import for RSA and Curve25519
+- Digital signatures (RSA, Ed25519, ECDSA)
+- Decryption / key agreement (RSA, X25519, ECDH)
+- Authentication (SSH)
+- PIN verification and management
+- Algorithm attribute changes via `gpg --card-edit` → `key-attr`
 
 
 ## Available/tested features for PIV (via yubico-piv-tool 2.7.2)
@@ -56,16 +61,10 @@ Below is an example of how to set up the virtual OpenPGP card in GitHub Actions 
     sudo apt-get update
     sudo apt-get install -y \
       pcscd \
-      libpcsclite-dev \
       libpcsclite1 \
       pcsc-tools \
       gnupg \
-      gnupg-agent \
-      scdaemon \
-      libclang-dev \
-      nettle-dev \
-      pkg-config \
-      build-essential
+      scdaemon
 ```
 
 ### Install yubico-piv-tool 2.7.2 for PIV related operations/tests
@@ -82,27 +81,18 @@ I have built the package for `ubuntu-latest` on Github.
     sudo apt install ./yubico/*.deb
 ```
 
-### Install Rust and Just
+### Install the IFD Handler (Pre-built Binary)
+
+The easiest way to install the IFD handler in CI is to use the pre-built binary:
 
 ```yaml
-- name: Install Rust
-  uses: dtolnay/rust-toolchain@stable
-
-- name: Install just
-  uses: extractions/setup-just@v2
-
-- name: Make just available for root
+- name: Install jcecard IFD handler
   run: |
-    sudo ln -sf $(which just) /usr/local/bin/just
-```
-
-### Build the IFD Handler
-
-```yaml
-- name: Build Rust IFD handler
-  run: |
+    wget https://kushaldas.in/ifd-jcecard.tar.gz
+    echo "74ffae1782ba974549783066045d900200609242ce3c23f38a01e3fae1c1d065  ifd-jcecard.tar.gz" | sha256sum -c -
+    tar xvf ifd-jcecard.tar.gz
     cd ifd-jcecard
-    cargo build --release
+    sudo ./install-jcecard.sh
 ```
 
 ### Set Up Python Environment
@@ -122,14 +112,6 @@ I have built the package for `ubuntu-latest` on Github.
     python -m pip install pexpect pyscard
 ```
 
-### Install IFD Handler to pcscd
-
-```yaml
-- name: Install IFD handler to pcscd
-  run: |
-    just install-ifd
-```
-
 ### Configure gnupg for Loopback Pinentry
 
 This is required if you want to use `gnupg` with the virtual card in CI:
@@ -144,21 +126,22 @@ This is required if you want to use `gnupg` with the virtual card in CI:
     gpgconf --kill all || true
 ```
 
-### Start the Virtual Card Services
+### Start pcscd
 
 ```yaml
-- name: Start TCP server and pcscd
+- name: Start pcscd
   run: |
-    source .venv/bin/activate
-    # Start TCP server in background
-    nohup python -m jcecard.tcp_server --debug > /tmp/tcp_server.log 2>&1 &
-    sleep 2
-    # Start pcscd in debug mode
-    sudo /usr/sbin/pcscd --foreground --debug --apdu > /tmp/pcscd_debug.log 2>&1 &
+    # Stop any existing pcscd
+    sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
+    sudo pkill -9 pcscd 2>/dev/null || true
+    sleep 1
+    # Start pcscd in debug mode (virtual card is embedded in IFD handler)
+    sudo JCECARD_STORAGE_DIR="$HOME/.jcecard" /usr/sbin/pcscd --foreground --debug --apdu --disable-polkit > /tmp/pcscd_debug.log 2>&1 &
     sleep 3
-    # Verify services are running
-    pgrep -f tcp_server && echo "TCP server is running"
+    # Verify pcscd is running and card is available
     pgrep pcscd && echo "pcscd is running"
+    source .venv/bin/activate
+    python -c "from smartcard.System import readers; r = readers(); print(f'Readers: {r}'); assert len(r) > 0"
 ```
 
 ### Run Your Tests
@@ -178,9 +161,7 @@ This is required if you want to use `gnupg` with the virtual card in CI:
   uses: actions/upload-artifact@v4
   with:
     name: debug-logs
-    path: |
-      /tmp/tcp_server.log
-      /tmp/pcscd_debug.log
+    path: /tmp/pcscd_debug.log
     retention-days: 5
 ```
 
