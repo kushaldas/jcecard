@@ -62,6 +62,7 @@ Below is an example of how to set up the virtual OpenPGP card in GitHub Actions 
     sudo apt-get install -y \
       pcscd \
       libpcsclite1 \
+      libpcsclite-dev \
       pcsc-tools \
       gnupg \
       scdaemon
