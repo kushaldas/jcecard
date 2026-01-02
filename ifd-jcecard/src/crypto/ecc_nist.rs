@@ -155,6 +155,56 @@ impl EccNistOperations {
             EccCurve::P384 => 97,  // 1 + 48 + 48
         }
     }
+
+    /// Perform ECDH key agreement
+    /// Returns shared secret
+    pub fn ecdh(curve: EccCurve, private_key_bytes: &[u8], public_key_bytes: &[u8]) -> Result<Vec<u8>, EccError> {
+        debug!("ECDH {:?}: private {} bytes, public {} bytes",
+               curve, private_key_bytes.len(), public_key_bytes.len());
+
+        match curve {
+            EccCurve::P256 => {
+                use p256::{SecretKey, PublicKey};
+                use p256::ecdh::diffie_hellman;
+
+                if private_key_bytes.len() != 32 {
+                    return Err(EccError::InvalidKey(
+                        format!("Invalid P-256 private key length: expected 32, got {}",
+                                private_key_bytes.len())
+                    ));
+                }
+
+                let secret_key = SecretKey::from_slice(private_key_bytes)
+                    .map_err(|e| EccError::InvalidKey(format!("Invalid P-256 private key: {}", e)))?;
+
+                let public_key = PublicKey::from_sec1_bytes(public_key_bytes)
+                    .map_err(|e| EccError::InvalidKey(format!("Invalid P-256 public key: {}", e)))?;
+
+                let shared_secret = diffie_hellman(secret_key.to_nonzero_scalar(), public_key.as_affine());
+                Ok(shared_secret.raw_secret_bytes().to_vec())
+            }
+            EccCurve::P384 => {
+                use p384::{SecretKey, PublicKey};
+                use p384::ecdh::diffie_hellman;
+
+                if private_key_bytes.len() != 48 {
+                    return Err(EccError::InvalidKey(
+                        format!("Invalid P-384 private key length: expected 48, got {}",
+                                private_key_bytes.len())
+                    ));
+                }
+
+                let secret_key = SecretKey::from_slice(private_key_bytes)
+                    .map_err(|e| EccError::InvalidKey(format!("Invalid P-384 private key: {}", e)))?;
+
+                let public_key = PublicKey::from_sec1_bytes(public_key_bytes)
+                    .map_err(|e| EccError::InvalidKey(format!("Invalid P-384 public key: {}", e)))?;
+
+                let shared_secret = diffie_hellman(secret_key.to_nonzero_scalar(), public_key.as_affine());
+                Ok(shared_secret.raw_secret_bytes().to_vec())
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -190,5 +240,29 @@ mod tests {
         let (private, public) = EccNistOperations::generate_keypair(EccCurve::P256).unwrap();
         let derived_public = EccNistOperations::get_public_key(EccCurve::P256, &private).unwrap();
         assert_eq!(public, derived_public);
+    }
+
+    #[test]
+    fn test_p256_ecdh() {
+        let (private_a, public_a) = EccNistOperations::generate_keypair(EccCurve::P256).unwrap();
+        let (private_b, public_b) = EccNistOperations::generate_keypair(EccCurve::P256).unwrap();
+
+        let shared_a = EccNistOperations::ecdh(EccCurve::P256, &private_a, &public_b).unwrap();
+        let shared_b = EccNistOperations::ecdh(EccCurve::P256, &private_b, &public_a).unwrap();
+
+        assert_eq!(shared_a, shared_b);
+        assert_eq!(shared_a.len(), 32);
+    }
+
+    #[test]
+    fn test_p384_ecdh() {
+        let (private_a, public_a) = EccNistOperations::generate_keypair(EccCurve::P384).unwrap();
+        let (private_b, public_b) = EccNistOperations::generate_keypair(EccCurve::P384).unwrap();
+
+        let shared_a = EccNistOperations::ecdh(EccCurve::P384, &private_a, &public_b).unwrap();
+        let shared_b = EccNistOperations::ecdh(EccCurve::P384, &private_b, &public_a).unwrap();
+
+        assert_eq!(shared_a, shared_b);
+        assert_eq!(shared_a.len(), 48);
     }
 }

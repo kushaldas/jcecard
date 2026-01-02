@@ -205,8 +205,8 @@ impl VirtualCard {
         const YUBIKEY_MGMT_AID: &[u8] = &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x47, 0x11, 0x17];
         if cmd.data == YUBIKEY_MGMT_AID {
             info!("Selected Yubikey Management applet (returning version string)");
-            // Return "jcecard - FW version 1.0.0" like real Yubikey
-            let mut response: Vec<u8> = b"jcecard - FW version 1.0.0".to_vec();
+            // Return version 5.4.3 to indicate full OpenPGP 3.4 support
+            let mut response: Vec<u8> = b"jcecard - FW version 5.4.3".to_vec();
             response.push(0x90);
             response.push(0x00);
             return response;

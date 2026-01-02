@@ -113,7 +113,7 @@ impl PIVApplet {
 
         // Build response: Application Property Template
         let response_data = [
-            0x4F, 0x06, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00,  // Application identifier
+            0x4F, 0x06, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00,  // Application identifier (PIV version 1.0)
             0x79, 0x07,  // Coexistent tag allocation authority
             0x4F, 0x05,  // AID tag
         ].iter().chain(PIV_AID.iter()).copied().collect::<Vec<u8>>();

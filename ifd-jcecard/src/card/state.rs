@@ -39,9 +39,12 @@ pub struct AlgorithmID;
 #[allow(dead_code)]
 impl AlgorithmID {
     pub const RSA: u8 = 0x01;
+    pub const ECDH: u8 = 0x12;        // ECDH (for NIST curves and X25519)
+    pub const ECDSA: u8 = 0x13;       // ECDSA (for NIST curves)
+    pub const EDDSA: u8 = 0x16;       // EdDSA (Ed25519)
+    // Legacy aliases
     pub const ECDSA_P256: u8 = 0x13;
     pub const ECDH_X25519: u8 = 0x12;
-    pub const EDDSA: u8 = 0x16;
 }
 
 /// Curve OIDs
@@ -52,8 +55,26 @@ pub struct CurveOID;
 impl CurveOID {
     pub const NIST_P256: &'static [u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
     pub const NIST_P384: &'static [u8] = &[0x2B, 0x81, 0x04, 0x00, 0x22];
+    pub const SECP256K1: &'static [u8] = &[0x2B, 0x81, 0x04, 0x00, 0x0A];
     pub const ED25519: &'static [u8] = &[0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01];
     pub const X25519: &'static [u8] = &[0x2B, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01];
+
+    /// Check if OID matches a known curve and return a descriptive name
+    pub fn name(oid: &[u8]) -> Option<&'static str> {
+        if oid == Self::NIST_P256 {
+            Some("nistp256")
+        } else if oid == Self::NIST_P384 {
+            Some("nistp384")
+        } else if oid == Self::SECP256K1 {
+            Some("secp256k1")
+        } else if oid == Self::ED25519 {
+            Some("ed25519")
+        } else if oid == Self::X25519 {
+            Some("cv25519")
+        } else {
+            None
+        }
+    }
 }
 
 /// Algorithm attributes for a key slot
@@ -99,7 +120,7 @@ impl AlgorithmAttributes {
     /// Create X25519 algorithm attributes
     pub fn x25519() -> Self {
         Self {
-            algorithm_id: AlgorithmID::ECDH_X25519,
+            algorithm_id: AlgorithmID::ECDH,
             param1: 0,
             param2: 0,
             param3: 0,
@@ -107,7 +128,100 @@ impl AlgorithmAttributes {
         }
     }
 
+    /// Create NIST P-256 ECDSA algorithm attributes (for signing)
+    pub fn nistp256_ecdsa() -> Self {
+        Self {
+            algorithm_id: AlgorithmID::ECDSA,
+            param1: 0,
+            param2: 0,
+            param3: 0,
+            curve_oid: CurveOID::NIST_P256.to_vec(),
+        }
+    }
+
+    /// Create NIST P-256 ECDH algorithm attributes (for decryption)
+    pub fn nistp256_ecdh() -> Self {
+        Self {
+            algorithm_id: AlgorithmID::ECDH,
+            param1: 0,
+            param2: 0,
+            param3: 0,
+            curve_oid: CurveOID::NIST_P256.to_vec(),
+        }
+    }
+
+    /// Create NIST P-384 ECDSA algorithm attributes (for signing)
+    pub fn nistp384_ecdsa() -> Self {
+        Self {
+            algorithm_id: AlgorithmID::ECDSA,
+            param1: 0,
+            param2: 0,
+            param3: 0,
+            curve_oid: CurveOID::NIST_P384.to_vec(),
+        }
+    }
+
+    /// Create NIST P-384 ECDH algorithm attributes (for decryption)
+    pub fn nistp384_ecdh() -> Self {
+        Self {
+            algorithm_id: AlgorithmID::ECDH,
+            param1: 0,
+            param2: 0,
+            param3: 0,
+            curve_oid: CurveOID::NIST_P384.to_vec(),
+        }
+    }
+
+    /// Create secp256k1 ECDSA algorithm attributes (for signing)
+    pub fn secp256k1_ecdsa() -> Self {
+        Self {
+            algorithm_id: AlgorithmID::ECDSA,
+            param1: 0,
+            param2: 0,
+            param3: 0,
+            curve_oid: CurveOID::SECP256K1.to_vec(),
+        }
+    }
+
+    /// Create secp256k1 ECDH algorithm attributes (for decryption)
+    pub fn secp256k1_ecdh() -> Self {
+        Self {
+            algorithm_id: AlgorithmID::ECDH,
+            param1: 0,
+            param2: 0,
+            param3: 0,
+            curve_oid: CurveOID::SECP256K1.to_vec(),
+        }
+    }
+
+    /// Check if this is a NIST P-256 curve
+    pub fn is_nistp256(&self) -> bool {
+        self.curve_oid == CurveOID::NIST_P256
+    }
+
+    /// Check if this is a NIST P-384 curve
+    pub fn is_nistp384(&self) -> bool {
+        self.curve_oid == CurveOID::NIST_P384
+    }
+
+    /// Check if this is a secp256k1 curve
+    pub fn is_secp256k1(&self) -> bool {
+        self.curve_oid == CurveOID::SECP256K1
+    }
+
+    /// Check if this is an Ed25519 curve
+    pub fn is_ed25519(&self) -> bool {
+        self.curve_oid == CurveOID::ED25519
+    }
+
+    /// Check if this is an X25519 curve
+    pub fn is_x25519(&self) -> bool {
+        self.curve_oid == CurveOID::X25519
+    }
+
     /// Encode to OpenPGP card format
+    /// For RSA: algo_id || modulus_bits (2) || exponent_bits (2) || format (1)
+    /// For ECC: algo_id || oid (NO length byte - length is implied by TLV wrapper)
     pub fn to_bytes(&self) -> Vec<u8> {
         if self.algorithm_id == AlgorithmID::RSA {
             vec![
@@ -120,12 +234,15 @@ impl AlgorithmAttributes {
             ]
         } else {
             let mut result = vec![self.algorithm_id];
+            // OID follows directly (no length byte - real Yubikey format)
             result.extend_from_slice(&self.curve_oid);
             result
         }
     }
 
     /// Parse from bytes
+    /// For RSA: algo_id || modulus_bits (2) || exponent_bits (2) || format (1)
+    /// For ECC: algo_id || oid (NO length byte - real Yubikey format)
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
         if data.is_empty() {
             return None;
@@ -143,7 +260,8 @@ impl AlgorithmAttributes {
             } else {
                 None
             }
-        } else {
+        } else if data.len() >= 2 {
+            // ECC: algo_id || oid (OID is the rest of the data, no length byte)
             Some(Self {
                 algorithm_id,
                 param1: 0,
@@ -151,6 +269,8 @@ impl AlgorithmAttributes {
                 param3: 0,
                 curve_oid: data[1..].to_vec(),
             })
+        } else {
+            None
         }
     }
 }
@@ -356,15 +476,15 @@ impl CardState {
     }
 
     /// Get the historical bytes for ATR and 5F52 DO
+    /// Format: Category indicator + compact-TLV objects + status indicator + SW
     pub fn get_historical_bytes(&self) -> Vec<u8> {
+        // Match real Yubikey format: 00 73 00 00 E0 05 90 00
         let lifecycle_status = if self.terminated { 0x07 } else { 0x05 };
         vec![
-            0x00,  // Category indicator
-            0x73,  // Card service data
-            0x00,  // Card capabilities byte 1
-            0x00,  // Card capabilities byte 2
-            0xE0,  // Status indicator
-            lifecycle_status,
+            0x00,  // Category indicator: compact TLV
+            0x73,  // Tag 7 (card capabilities), length 3
+            0x00, 0x00, 0xE0,  // Card capabilities (matches real Yubikey)
+            lifecycle_status,  // Status indicator byte
             0x90, 0x00,  // Status word
         ]
     }

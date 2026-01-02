@@ -3,23 +3,18 @@
 //! Provides default ATR and ATR building functions for the virtual card.
 
 /// Default ATR for the virtual OpenPGP card
-/// This matches the format used by Yubikey and similar devices
+/// This matches the format used by Yubikey (real Yubikey: 00 73 00 00 E0 05 90 00)
 pub const DEFAULT_ATR: &[u8] = &[
     0x3B, // TS: Direct convention
-    0xDA, // T0: TD1 present, 10 historical bytes
-    0x18, // TD1: T=1 protocol, TD2 present
-    0xFF, // TD2: More interface bytes
-    0x81, // T1: IFSC = 254
-    0xB1, // More TD bytes
-    0xFE, // IFSC
-    0x75, // Historical bytes start
-    0x1F, 0x03, // Card capabilities
-    0x00, 0x31, // Card issuer data
-    0xC5, 0x73, // Application identifier
-    0xC0, 0x01, // Additional info
-    0x40, 0x00, // Status indicator
+    0x88, // T0: TD1 present, 8 historical bytes
+    0x01, // TD1: T=1 protocol
+    // Historical bytes (8 bytes - matches real Yubikey):
+    0x00, // Category indicator: compact TLV
+    0x73, // Tag 7 (card capabilities), length 3
+    0x00, 0x00, 0xE0, // Card capabilities
+    0x05, // Lifecycle status: operational
     0x90, 0x00, // Status word
-    0x0C, // TCK (checksum)
+    0x8F, // TCK (checksum - XOR of T0 to last historical byte)
 ];
 
 /// Simple ATR for basic compatibility
@@ -63,16 +58,14 @@ pub fn build_atr(historical_bytes: &[u8]) -> Vec<u8> {
 
 /// Create an OpenPGP-compatible ATR
 pub fn create_openpgp_atr() -> Vec<u8> {
-    // Historical bytes for OpenPGP card
-    // Based on ISO 7816-4 Annex A
+    // Historical bytes for OpenPGP card (matching real Yubikey format)
+    // Real Yubikey uses: 00 73 00 00 E0 05 90 00
     let historical = [
-        0x00, // Category indicator (compact TLV)
-        0x73, // Card service data
-        0x00, // Card capabilities (selection methods)
-        0x00, // Card capabilities (data coding)
-        0xE0, // Status indicator (life cycle + status bytes follow)
-        0x05, // Life cycle: operational state
-        0x90, 0x00, // Status word: success
+        0x00, // Category indicator: compact TLV
+        0x73, // Tag 7 (card capabilities), length 3
+        0x00, 0x00, 0xE0, // Card capabilities
+        0x05, // Lifecycle status: operational
+        0x90, 0x00, // Status word
     ];
 
     build_atr(&historical)
