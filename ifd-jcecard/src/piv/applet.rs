@@ -30,6 +30,14 @@ pub struct PIVApplet {
     current_challenge: Option<Vec<u8>>,
     version: (u8, u8, u8),
     serial: u32,
+    /// Buffer for command chaining (PUT DATA with large certificates)
+    command_chain_buffer: Vec<u8>,
+    /// INS of the command being chained
+    command_chain_ins: Option<u8>,
+    /// P1 of the command being chained
+    command_chain_p1: u8,
+    /// P2 of the command being chained
+    command_chain_p2: u8,
 }
 
 impl PIVApplet {
@@ -49,12 +57,70 @@ impl PIVApplet {
             current_challenge: None,
             version: (1, 0, 0),
             serial,
+            command_chain_buffer: Vec::new(),
+            command_chain_ins: None,
+            command_chain_p1: 0,
+            command_chain_p2: 0,
         }
     }
 
     /// Process an APDU command and return the response
     pub fn process_apdu(&mut self, cmd: &APDU) -> Response {
-        debug!("PIV APDU: INS={:02X} P1={:02X} P2={:02X}", cmd.ins, cmd.p1, cmd.p2);
+        debug!("PIV APDU: CLA={:02X} INS={:02X} P1={:02X} P2={:02X} data_len={}",
+               cmd.cla, cmd.ins, cmd.p1, cmd.p2, cmd.data.len());
+
+        // Check for command chaining (CLA bit 4 set means more data follows)
+        let is_chaining = (cmd.cla & 0x10) != 0;
+
+        // Handle command chaining for PUT DATA (large certificates)
+        if is_chaining || self.command_chain_ins.is_some() {
+            // If this is a new chain, store the command parameters
+            if self.command_chain_ins.is_none() {
+                self.command_chain_ins = Some(cmd.ins);
+                self.command_chain_p1 = cmd.p1;
+                self.command_chain_p2 = cmd.p2;
+                self.command_chain_buffer.clear();
+            }
+
+            // Verify same instruction for chained commands
+            if self.command_chain_ins != Some(cmd.ins) {
+                self.command_chain_ins = None;
+                self.command_chain_buffer.clear();
+                return Response::error(SW::CONDITIONS_NOT_SATISFIED);
+            }
+
+            // Append data to buffer
+            self.command_chain_buffer.extend_from_slice(&cmd.data);
+            debug!("Command chaining: buffered {} bytes, total {}",
+                   cmd.data.len(), self.command_chain_buffer.len());
+
+            if is_chaining {
+                // More data expected, return success
+                return Response::ok();
+            } else {
+                // Last in chain - process the complete data
+                let complete_cmd = APDU {
+                    cla: cmd.cla & 0xEF, // Clear chaining bit
+                    ins: self.command_chain_ins.unwrap(),
+                    p1: self.command_chain_p1,
+                    p2: self.command_chain_p2,
+                    data: std::mem::take(&mut self.command_chain_buffer),
+                    le: cmd.le,
+                };
+                self.command_chain_ins = None;
+
+                debug!("Command chain complete: {} bytes total", complete_cmd.data.len());
+
+                // Process the complete command
+                return match complete_cmd.ins {
+                    0xDB => self.handle_put_data(&complete_cmd),
+                    _ => {
+                        warn!("Command chaining not supported for INS {:02X}", complete_cmd.ins);
+                        Response::error(SW::INS_NOT_SUPPORTED)
+                    }
+                };
+            }
+        }
 
         match cmd.ins {
             0xA4 => self.handle_select(cmd),
