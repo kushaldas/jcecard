@@ -116,7 +116,7 @@ pub fn calculate_fingerprint_ecdh_x25519(
     hasher.finalize().to_vec()
 }
 
-/// Calculate OpenPGP v4 fingerprint for an ECDSA key (P-256 or P-384)
+/// Calculate OpenPGP v4 fingerprint for an ECDSA key (P-256, P-384, secp256k1)
 pub fn calculate_fingerprint_ecdsa(
     public_key: &[u8],  // Uncompressed point (65 bytes for P-256, 97 for P-384)
     curve_oid: &[u8],
@@ -136,6 +136,49 @@ pub fn calculate_fingerprint_ecdsa(
     let pk_bits = (public_key.len() * 8) as u16;
     packet.extend_from_slice(&pk_bits.to_be_bytes());
     packet.extend_from_slice(public_key);
+
+    // Hash with prefix
+    let packet_len = packet.len() as u16;
+    let mut hasher = Sha1::new();
+    hasher.update([0x99]);
+    hasher.update(packet_len.to_be_bytes());
+    hasher.update(&packet);
+
+    hasher.finalize().to_vec()
+}
+
+/// Calculate OpenPGP v4 fingerprint for an ECDH key with NIST curves (P-256, P-384, secp256k1)
+pub fn calculate_fingerprint_ecdh(
+    public_key: &[u8],  // Uncompressed point (65 bytes for P-256, 97 for P-384)
+    curve_oid: &[u8],
+    timestamp: u32,
+) -> Vec<u8> {
+    // Packet body
+    let mut packet = Vec::new();
+    packet.push(4);  // Version 4
+    packet.extend_from_slice(&timestamp.to_be_bytes());
+    packet.push(18);  // Algorithm: ECDH
+
+    // OID length + OID
+    packet.push(curve_oid.len() as u8);
+    packet.extend_from_slice(curve_oid);
+
+    // MPI for public key
+    let pk_bits = (public_key.len() * 8) as u16;
+    packet.extend_from_slice(&pk_bits.to_be_bytes());
+    packet.extend_from_slice(public_key);
+
+    // KDF parameters: hash algo (SHA256=8 for P-256, SHA384=9 for P-384), cipher algo (AES128=7, AES256=9)
+    // Use SHA256/AES128 for P-256/secp256k1, SHA384/AES256 for P-384
+    let (hash_algo, cipher_algo) = if public_key.len() == 97 {
+        (9, 9)  // SHA384, AES256 for P-384
+    } else {
+        (8, 7)  // SHA256, AES128 for P-256/secp256k1
+    };
+    packet.push(3);  // KDF params length
+    packet.push(1);  // Reserved
+    packet.push(hash_algo);
+    packet.push(cipher_algo);
 
     // Hash with prefix
     let packet_len = packet.len() as u16;

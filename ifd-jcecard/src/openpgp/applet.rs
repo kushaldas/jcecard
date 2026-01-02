@@ -1108,8 +1108,8 @@ impl OpenPGPApplet {
                         if algorithm.is_x25519() {
                             fingerprint::calculate_fingerprint_ecdh_x25519(&pub_key, timestamp)
                         } else {
-                            // For NIST curves and secp256k1 ECDH, use same format as ECDSA
-                            fingerprint::calculate_fingerprint_ecdsa(&pub_key, &algorithm.curve_oid, timestamp)
+                            // For NIST curves and secp256k1 ECDH, use ECDH fingerprint (algorithm 18)
+                            fingerprint::calculate_fingerprint_ecdh(&pub_key, &algorithm.curve_oid, timestamp)
                         }
                     } else {
                         Vec::new()

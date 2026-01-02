@@ -18,4 +18,4 @@ pub use self::ecc_nist::{EccNistOperations, EccCurve};
 pub use self::secp256k1::Secp256k1Operations;
 pub use self::tdes::TDesOperations;
 pub use self::hash::HashOperations;
-pub use self::fingerprint::{calculate_fingerprint_rsa, calculate_fingerprint_eddsa, calculate_fingerprint_ecdh_x25519, calculate_fingerprint_ecdsa, current_timestamp};
+pub use self::fingerprint::{calculate_fingerprint_rsa, calculate_fingerprint_eddsa, calculate_fingerprint_ecdh_x25519, calculate_fingerprint_ecdsa, calculate_fingerprint_ecdh, current_timestamp};

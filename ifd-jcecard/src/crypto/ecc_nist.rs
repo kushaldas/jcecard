@@ -4,7 +4,7 @@
 
 use p256::ecdsa::{SigningKey as P256SigningKey, Signature as P256Signature};
 use p384::ecdsa::{SigningKey as P384SigningKey, Signature as P384Signature};
-use p256::ecdsa::signature::Signer;
+use p256::ecdsa::signature::hazmat::PrehashSigner;
 use rand::rngs::OsRng;
 use log::debug;
 
@@ -80,7 +80,9 @@ impl EccNistOperations {
                 let signing_key = P256SigningKey::from_bytes(key_bytes.into())
                     .map_err(|e| EccError::InvalidKey(e.to_string()))?;
 
-                let signature: P256Signature = signing_key.sign(data);
+                // Use sign_prehash since GPG sends the hash directly, not the original message
+                let signature: P256Signature = signing_key.sign_prehash(data)
+                    .map_err(|e| EccError::SigningFailed(e.to_string()))?;
                 Ok(signature.to_bytes().to_vec())
             }
             EccCurve::P384 => {
@@ -96,7 +98,9 @@ impl EccNistOperations {
                 let signing_key = P384SigningKey::from_bytes(key_bytes.into())
                     .map_err(|e| EccError::InvalidKey(e.to_string()))?;
 
-                let signature: P384Signature = signing_key.sign(data);
+                // Use sign_prehash since GPG sends the hash directly, not the original message
+                let signature: P384Signature = signing_key.sign_prehash(data)
+                    .map_err(|e| EccError::SigningFailed(e.to_string()))?;
                 Ok(signature.to_bytes().to_vec())
             }
         }
@@ -229,9 +233,11 @@ mod tests {
 
     #[test]
     fn test_p256_sign() {
+        use sha2::{Sha256, Digest};
         let (private, _) = EccNistOperations::generate_keypair(EccCurve::P256).unwrap();
-        let data = b"test message";
-        let signature = EccNistOperations::sign(EccCurve::P256, &private, data).unwrap();
+        // sign_prehash expects a hash, not raw data
+        let hash = Sha256::digest(b"test message");
+        let signature = EccNistOperations::sign(EccCurve::P256, &private, &hash).unwrap();
         assert_eq!(signature.len(), 64); // r || s, each 32 bytes
     }
 
