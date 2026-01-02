@@ -1,11 +1,10 @@
 """Integration tests using yubico-piv-tool against jcecard via pcscd.
 
 These tests require:
-- jcecard TCP server running (just restart-tcp)
-- pcscd running with the IFD handler installed
+- pcscd running with the jcecard IFD handler installed (just install-ifd && just restart-pcscd)
 - yubico-piv-tool installed
 
-Run with: pytest tests/test_piv_yubico_tool_integration.py -xvs
+Run with: pytest tests/test_smartcard_piv.py -xvs
 Or mark to skip if environment not ready: pytest -m "not integration"
 """
 
@@ -28,14 +27,16 @@ pytestmark = pytest.mark.integration
 
 
 def is_jcecard_running() -> bool:
-    """Check if jcecard TCP server is running."""
+    """Check if jcecard virtual card is available via pcscd."""
     try:
         result = subprocess.run(
-            ["pgrep", "-f", "tcp_server"],
+            ["pcsc_scan", "-r"],
             capture_output=True,
             text=True,
+            timeout=5,
         )
-        return result.returncode == 0
+        # Check if jcecard reader is listed
+        return "jcecard" in result.stdout.lower()
     except Exception:
         return False
 
@@ -183,10 +184,13 @@ def check_environment():
         pytest.skip("yubico-piv-tool not installed")
 
     if not is_jcecard_running():
-        pytest.skip("jcecard TCP server not running (run: just restart-tcp)")
+        pytest.skip("jcecard virtual card not available (run: just install-ifd && just restart-pcscd)")
 
     if not is_pcscd_running():
         pytest.skip("pcscd not running")
+
+    # Kill scdaemon to release card lock - it conflicts with yubico-piv-tool
+    subprocess.run(["pkill", "-9", "scdaemon"], capture_output=True)
 
     # Small delay to ensure services are ready
     time.sleep(0.5)
